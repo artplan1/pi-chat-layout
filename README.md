@@ -141,9 +141,9 @@ Pi currently has no public renderer hook for built-in user and assistant message
 ## Development
 
 ```bash
-npm install
-npm run check
-npm run pack:dry
+pnpm install
+pnpm check
+pnpm pack:dry
 ```
 
 Regression coverage includes:

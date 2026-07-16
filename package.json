@@ -1,6 +1,7 @@
 {
   "name": "pi-chat-layout",
   "version": "0.2.0",
+  "packageManager": "pnpm@11.8.0",
   "description": "Messenger-style conversation layout for the Pi coding agent TUI",
   "type": "module",
   "license": "MIT",
@@ -31,8 +32,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test",
-    "pack:dry": "npm pack --dry-run"
+    "check": "pnpm run typecheck && pnpm test",
+    "pack:dry": "pnpm pack --dry-run"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "^0.80.6",
