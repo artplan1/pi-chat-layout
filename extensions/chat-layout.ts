@@ -1,9 +1,13 @@
+import { type FSWatcher, watch } from "node:fs";
+import { basename, dirname } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	AssistantMessageComponent,
 	type ExtensionAPI,
 	type ExtensionContext,
+	getMarkdownTheme,
 	parseSkillBlock,
+	type ThemeColor,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -11,16 +15,29 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { DEFAULT_CONFIG, type ChatLayoutConfig, loadConfig } from "../src/config.js";
+import {
+	type AssistantNameMode,
+	configPath,
+	DEFAULT_CONFIG,
+	type ChatLayoutConfig,
+	type HeaderMetadata,
+	loadConfig,
+} from "../src/config.js";
 
 interface Timing {
 	completedAt: number;
 	durationMs: number;
 }
 
-interface ActiveTheme {
-	fg(color: string, value: string): string;
-	bold(value: string): string;
+interface AssistantPresentation {
+	kind: "primary" | "continuation";
+	step: number;
+	dateLabel?: string;
+}
+
+interface UserPresentation {
+	sentAt: number;
+	dateLabel?: string;
 }
 
 interface AssistantMessageContainer {
@@ -28,14 +45,27 @@ interface AssistantMessageContainer {
 		children: Component[];
 	};
 	outputPad: number;
+	invalidate(): void;
 }
 
 interface UserMessageContainer {
 	text: string;
 	outputPad: number;
+	invalidate(): void;
+}
+
+interface HeaderField {
+	key: HeaderMetadata;
+	text: string;
 }
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
+type RenderTheme = ExtensionContext["ui"]["theme"];
+type AssistantUpdate = (this: AssistantMessageContainer, message: AssistantMessage) => void;
+type UserInvalidate = (this: UserMessageContainer) => void;
+type UserRebuild = (this: UserMessageContainer) => void;
+type UserRender = (this: UserMessageContainer, width: number) => string[];
+
 const THINKING_LEVELS = new Set<ThinkingLevel>([
 	"off",
 	"minimal",
@@ -45,18 +75,15 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
 	"xhigh",
 	"max",
 ]);
-
-function isThinkingLevel(value: string): value is ThinkingLevel {
-	return THINKING_LEVELS.has(value as ThinkingLevel);
-}
-
-type AssistantUpdate = (this: AssistantMessageContainer, message: AssistantMessage) => void;
-type UserInvalidate = (this: UserMessageContainer) => void;
-type UserRebuild = (this: UserMessageContainer) => void;
-type UserRender = (this: UserMessageContainer, width: number) => string[];
-
-const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
+const FIELD_DROP_PRIORITY: Record<HeaderMetadata, number> = {
+	time: 0,
+	duration: 1,
+	thinking: 2,
+	tokens: 3,
+	cost: 4,
+};
 const USER_SENT_AT_KEY = Symbol.for("pi-chat-layout:user-sent-at");
+const USER_DATE_LABEL_KEY = Symbol.for("pi-chat-layout:user-date-label");
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
@@ -66,18 +93,24 @@ const TIME_FORMATTER = new Intl.DateTimeFormat([], {
 	second: "2-digit",
 	hour12: false,
 });
+const DATE_FORMATTER = new Intl.DateTimeFormat([], {
+	year: "numeric",
+	month: "short",
+	day: "numeric",
+});
 const formattedTimeCache = new Map<number, string>();
+let renderTheme: RenderTheme | undefined;
 
-function activeTheme(): ActiveTheme | undefined {
-	return (globalThis as Record<PropertyKey, unknown>)[THEME_KEY] as ActiveTheme | undefined;
+function isThinkingLevel(value: string): value is ThinkingLevel {
+	return THINKING_LEVELS.has(value as ThinkingLevel);
 }
 
-function themed(color: string, text: string): string {
-	return activeTheme()?.fg(color, text) ?? text;
+function themed(color: ThemeColor, text: string): string {
+	return renderTheme?.fg(color, text) ?? text;
 }
 
 function bold(text: string): string {
-	return activeTheme()?.bold(text) ?? `\x1b[1m${text}\x1b[22m`;
+	return renderTheme?.bold(text) ?? `\x1b[1m${text}\x1b[22m`;
 }
 
 function parseTimestamp(value: unknown): number | undefined {
@@ -101,15 +134,43 @@ function formatTime(timestamp: unknown): string {
 	return formatted;
 }
 
+function formatDate(timestamp: number): string {
+	return DATE_FORMATTER.format(timestamp);
+}
+
+function calendarDay(timestamp: number): string {
+	const date = new Date(timestamp);
+	return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
 function formatDuration(durationMs: number): string {
 	if (durationMs < 1000) return `${durationMs}ms`;
-
 	const seconds = durationMs / 1000;
 	if (seconds < 60) return `${seconds.toFixed(1)}s`;
-
 	const minutes = Math.floor(seconds / 60);
 	const remainingSeconds = Math.round(seconds - minutes * 60);
 	return `${minutes}m ${remainingSeconds.toString().padStart(2, "0")}s`;
+}
+
+function formatTokenCount(count: number): string {
+	if (count < 1000) return count.toString();
+	if (count < 1_000_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
+	return `${(count / 1_000_000).toFixed(count < 10_000_000 ? 1 : 0)}m`;
+}
+
+function formatTokens(message: AssistantMessage): string {
+	return `${formatTokenCount(message.usage.input)}↑ ${formatTokenCount(message.usage.output)}↓`;
+}
+
+function formatCost(cost: number): string {
+	if (cost === 0) return "$0";
+	if (cost < 0.0001) return "<$0.0001";
+	if (cost < 0.01) return `$${cost.toFixed(4)}`;
+	return `$${cost.toFixed(2)}`;
+}
+
+function thinkingColor(level: ThinkingLevel): ThemeColor {
+	return `thinking${level[0].toUpperCase()}${level.slice(1)}` as ThemeColor;
 }
 
 function prefixAfterShellMarker(line: string, prefix: string): string {
@@ -124,59 +185,140 @@ function rightAlign(line: string, width: number): string {
 	return prefixAfterShellMarker(line, padding);
 }
 
-function actorHeader(
-	actor: string,
-	timestamp: unknown,
-	width: number,
-	durationMs?: number,
-	thinkingLevel?: ThinkingLevel,
-): string {
-	const separator = themed("dim", "◆");
-	const actorLabel = bold(themed("accent", actor));
-	const thinking = thinkingLevel === undefined
-		? ""
-		: `  ${separator}  ${themed(`thinking${thinkingLevel[0].toUpperCase()}${thinkingLevel.slice(1)}`, thinkingLevel)}`;
-	const timeLabel = themed("dim", formatTime(timestamp));
-	const duration = durationMs === undefined
-		? ""
-		: `  ${separator}  ${themed("dim", formatDuration(durationMs))}`;
-	return truncateToWidth(`${actorLabel}${thinking}  ${separator}  ${timeLabel}${duration}`, width);
+function fitHeader(label: string, fields: HeaderField[], width: number, separator: string): string {
+	const visibleFields = [...fields];
+	const render = () => [label, ...visibleFields.map((field) => field.text)].join(`  ${separator}  `);
+
+	while (visibleFields.length > 0 && visibleWidth(render()) > width) {
+		let dropIndex = 0;
+		for (let index = 1; index < visibleFields.length; index += 1) {
+			if (FIELD_DROP_PRIORITY[visibleFields[index].key] > FIELD_DROP_PRIORITY[visibleFields[dropIndex].key]) {
+				dropIndex = index;
+			}
+		}
+		visibleFields.splice(dropIndex, 1);
+	}
+	return truncateToWidth(render(), width);
 }
 
-function messageDivider(width: number): string[] {
-	return ["", themed("dim", "─".repeat(Math.max(0, width))), ""];
+function actorHeader(actor: string, fields: HeaderField[], width: number): string {
+	return fitHeader(bold(themed("accent", actor)), fields, width, themed("dim", "×"));
+}
+
+function stepHeader(step: number, fields: HeaderField[], width: number): string {
+	return fitHeader(
+		themed("dim", `step ${step}`),
+		fields.filter((field) => field.key !== "thinking"),
+		width,
+		themed("dim", "›"),
+	);
+}
+
+function messageDivider(width: number, dateLabel?: string): string[] {
+	if (!dateLabel) return ["", themed("dim", "─".repeat(Math.max(0, width))), ""];
+	const label = ` ${dateLabel} `;
+	if (visibleWidth(label) >= width) return ["", themed("dim", truncateToWidth(label, width)), ""];
+	const remaining = width - visibleWidth(label);
+	const left = Math.floor(remaining / 2);
+	const right = remaining - left;
+	return ["", themed("dim", `${"─".repeat(left)}${label}${"─".repeat(right)}`), ""];
+}
+
+function iconLabel(icon: string, label: string): string {
+	return [icon, label].filter(Boolean).join(" ");
+}
+
+function assistantActor(model: string, name: string, mode: AssistantNameMode): string {
+	if (!name) return model;
+	return mode === "replace" ? name : `${name} ${model}`;
+}
+
+function assistantFields(
+	message: AssistantMessage,
+	timing: Timing | undefined,
+	thinkingLevel: ThinkingLevel | undefined,
+	metadata: HeaderMetadata[],
+): HeaderField[] {
+	const completedAt = timing?.completedAt ?? message.timestamp;
+	const fields: HeaderField[] = [];
+	for (const item of metadata) {
+		switch (item) {
+			case "thinking":
+				if (thinkingLevel !== undefined) {
+					fields.push({ key: item, text: themed(thinkingColor(thinkingLevel), thinkingLevel) });
+				}
+				break;
+			case "time":
+				fields.push({ key: item, text: themed("dim", formatTime(completedAt)) });
+				break;
+			case "duration":
+				if (timing !== undefined) {
+					fields.push({ key: item, text: themed("dim", formatDuration(timing.durationMs)) });
+				}
+				break;
+			case "tokens":
+				if (timing !== undefined) {
+					fields.push({ key: item, text: themed("dim", formatTokens(message)) });
+				}
+				break;
+			case "cost":
+				if (timing !== undefined) {
+					fields.push({ key: item, text: themed("dim", formatCost(message.usage.cost.total)) });
+				}
+				break;
+		}
+	}
+	return fields;
 }
 
 function assistantHeader(
 	message: AssistantMessage,
 	timing: Timing | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
+	presentation: AssistantPresentation | undefined,
 	padding: number,
-	assistantIcon: string,
+	getConfig: () => ChatLayoutConfig,
+	getEpoch: () => number,
 ): Component {
 	let cachedWidth: number | undefined;
 	let cachedLines: string[] | undefined;
+	let cachedEpoch: number | undefined;
 	return {
 		render(width: number): string[] {
-			if (cachedWidth === width && cachedLines !== undefined) return cachedLines;
+			const epoch = getEpoch();
+			if (cachedWidth === width && cachedEpoch === epoch && cachedLines !== undefined) return cachedLines;
+			const config = getConfig();
 			const horizontalPadding = Math.min(padding, Math.max(0, Math.floor((width - 1) / 2)));
 			const contentWidth = Math.max(1, width - horizontalPadding * 2);
-			const completedAt = timing?.completedAt ?? message.timestamp;
-			const actor = assistantIcon ? `${assistantIcon} ${message.model}` : message.model;
-			const header = actorHeader(
-				actor,
-				completedAt,
-				contentWidth,
-				timing?.durationMs,
-				thinkingLevel,
-			);
-			const insetHeader = `${" ".repeat(horizontalPadding)}${header}`;
+			const fields = assistantFields(message, timing, thinkingLevel, config.header.metadata);
+			const continuation = presentation?.kind === "continuation" && !presentation.dateLabel;
+			let header: string;
+			let insetHeader: string;
+			if (continuation) {
+				header = stepHeader(presentation.step, fields, contentWidth);
+				insetHeader = `${" ".repeat(horizontalPadding)}${header}`;
+			} else {
+				const actor = iconLabel(
+					config.icons.assistant,
+					assistantActor(
+						message.model,
+						config.actors.assistant.name,
+						config.actors.assistant.mode,
+					),
+				);
+				header = actorHeader(actor, fields, contentWidth);
+				insetHeader = `${" ".repeat(horizontalPadding)}${header}`;
+			}
 			cachedWidth = width;
-			cachedLines = [...messageDivider(width), insetHeader];
+			cachedEpoch = epoch;
+			cachedLines = continuation
+				? ["", insetHeader]
+				: [...messageDivider(width, presentation?.dateLabel), insetHeader];
 			return cachedLines;
 		},
 		invalidate() {
 			cachedWidth = undefined;
+			cachedEpoch = undefined;
 			cachedLines = undefined;
 		},
 	};
@@ -193,43 +335,77 @@ function userMessageText(message: { content: unknown }): string {
 		.join("");
 }
 
+function sameConfig(left: ChatLayoutConfig, right: ChatLayoutConfig): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export default function (pi: ExtensionAPI) {
 	let config: ChatLayoutConfig = structuredClone(DEFAULT_CONFIG);
 	let timingByMessage = new WeakMap<AssistantMessage, Timing>();
 	let thinkingByMessage = new WeakMap<AssistantMessage, ThinkingLevel>();
+	let presentationByMessage = new WeakMap<AssistantMessage, AssistantPresentation>();
 	let activeAssistantThinkingLevel: ThinkingLevel | undefined;
-	let userRenderCache = new WeakMap<UserMessageContainer, { width: number; lines: string[] }>();
-	let pendingUserTimes = new Map<string, number[]>();
+	let activeAssistantPresentation: AssistantPresentation | undefined;
+	let userRenderCache = new WeakMap<UserMessageContainer, { epoch: number; width: number; lines: string[] }>();
+	let pendingUserPresentations = new Map<string, UserPresentation[]>();
+	let nextAssistantStep = 1;
+	let lastMessageDay: string | undefined;
 	let restoreLayout: (() => void) | undefined;
+	let renderEpoch = 0;
+	let configWatcher: FSWatcher | undefined;
+	let configReloadTimer: NodeJS.Timeout | undefined;
+	let lastConfigWarning: string | undefined;
 
-	function queueUserTime(text: string, timestamp: unknown): void {
-		const renderedText = parseSkillBlock(text)?.userMessage ?? text;
+	function dateLabelFor(timestamp: unknown, includeFirst: boolean): string | undefined {
 		const parsedTimestamp = parseTimestamp(timestamp);
-		if (!renderedText || parsedTimestamp === undefined) return;
-		const queue = pendingUserTimes.get(renderedText) ?? [];
-		queue.push(parsedTimestamp);
-		pendingUserTimes.set(renderedText, queue);
+		if (parsedTimestamp === undefined) return undefined;
+		const day = calendarDay(parsedTimestamp);
+		const changed = lastMessageDay !== undefined && day !== lastMessageDay;
+		const first = includeFirst && lastMessageDay === undefined;
+		lastMessageDay = day;
+		return changed || first ? formatDate(parsedTimestamp) : undefined;
 	}
 
-	function resolveUserSentAt(component: UserMessageContainer): number {
+	function queueUserPresentation(text: string, timestamp: unknown, includeFirstDate = false): void {
+		const renderedText = parseSkillBlock(text)?.userMessage ?? text;
+		const sentAt = parseTimestamp(timestamp);
+		if (!renderedText || sentAt === undefined) return;
+		const queue = pendingUserPresentations.get(renderedText) ?? [];
+		queue.push({ sentAt, dateLabel: dateLabelFor(sentAt, includeFirstDate) });
+		pendingUserPresentations.set(renderedText, queue);
+	}
+
+	function resolveUserPresentation(component: UserMessageContainer): UserPresentation {
 		const state = component as unknown as Record<PropertyKey, unknown>;
 		const persistedTimestamp = parseTimestamp(state[USER_SENT_AT_KEY]);
-		if (persistedTimestamp !== undefined) return persistedTimestamp;
+		if (persistedTimestamp !== undefined) {
+			const persistedDate = state[USER_DATE_LABEL_KEY];
+			return {
+				sentAt: persistedTimestamp,
+				dateLabel: typeof persistedDate === "string" ? persistedDate : undefined,
+			};
+		}
 
-		const queue = pendingUserTimes.get(component.text);
-		const sentAt = queue?.shift() ?? Date.now();
-		if (queue?.length === 0) pendingUserTimes.delete(component.text);
-		state[USER_SENT_AT_KEY] = sentAt;
-		return sentAt;
+		const queue = pendingUserPresentations.get(component.text);
+		const presentation = queue?.shift() ?? { sentAt: Date.now() };
+		if (queue?.length === 0) pendingUserPresentations.delete(component.text);
+		state[USER_SENT_AT_KEY] = presentation.sentAt;
+		state[USER_DATE_LABEL_KEY] = presentation.dateLabel ?? null;
+		return presentation;
 	}
 
-	function rememberHistoricalTimings(ctx: ExtensionContext): void {
+	function rememberHistoricalState(ctx: ExtensionContext): void {
 		timingByMessage = new WeakMap<AssistantMessage, Timing>();
 		thinkingByMessage = new WeakMap<AssistantMessage, ThinkingLevel>();
+		presentationByMessage = new WeakMap<AssistantMessage, AssistantPresentation>();
 		activeAssistantThinkingLevel = undefined;
-		userRenderCache = new WeakMap<UserMessageContainer, { width: number; lines: string[] }>();
-		pendingUserTimes = new Map<string, number[]>();
+		activeAssistantPresentation = undefined;
+		userRenderCache = new WeakMap<UserMessageContainer, { epoch: number; width: number; lines: string[] }>();
+		pendingUserPresentations = new Map<string, UserPresentation[]>();
+		nextAssistantStep = 1;
+		lastMessageDay = undefined;
 		let thinkingLevel: ThinkingLevel | undefined;
+		let includeFirstDate = true;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "thinking_level_change") {
@@ -238,16 +414,25 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (entry.type !== "message") continue;
 			if (entry.message.role === "user") {
-				queueUserTime(userMessageText(entry.message), entry.message.timestamp);
+				queueUserPresentation(userMessageText(entry.message), entry.message.timestamp, includeFirstDate);
+				includeFirstDate = false;
+				nextAssistantStep = 1;
 				continue;
 			}
 			if (entry.message.role !== "assistant") continue;
-			if (thinkingLevel !== undefined) thinkingByMessage.set(entry.message, thinkingLevel);
 
 			const completedAt = parseTimestamp(entry.timestamp);
 			const startedAt = parseTimestamp(entry.message.timestamp);
+			const displayedAt = completedAt ?? startedAt;
+			presentationByMessage.set(entry.message, {
+				kind: nextAssistantStep === 1 ? "primary" : "continuation",
+				step: nextAssistantStep,
+				dateLabel: dateLabelFor(displayedAt, includeFirstDate),
+			});
+			includeFirstDate = false;
+			nextAssistantStep += 1;
+			if (thinkingLevel !== undefined) thinkingByMessage.set(entry.message, thinkingLevel);
 			if (completedAt === undefined || startedAt === undefined) continue;
-
 			timingByMessage.set(entry.message, {
 				completedAt,
 				durationMs: Math.max(0, completedAt - startedAt),
@@ -279,17 +464,31 @@ export default function (pi: ExtensionAPI) {
 		const originalUserInvalidate = userPrototype.invalidate;
 		const originalUserRebuild = userPrototype.rebuild;
 		const originalUserRender = userPrototype.render;
+		const probeText = "chat-layout-probe";
+		const probe = new UserMessageComponent(probeText, getMarkdownTheme(), 1) as unknown as UserMessageContainer;
+		const probeLines = originalUserRender.call(probe, 80);
+		if (
+			probe.text !== probeText ||
+			probe.outputPad !== 1 ||
+			!probeLines.some((line) => line.includes(probeText)) ||
+			probeLines.some((line) => visibleWidth(line) > 80)
+		) {
+			throw new Error("This Pi version failed the message renderer compatibility probe.");
+		}
 
 		const decoratedAssistantUpdate: AssistantUpdate = function (message) {
 			originalAssistantUpdate.call(this, message);
 			if (!this.contentContainer || !Array.isArray(this.contentContainer.children)) return;
+			const presentation = presentationByMessage.get(message);
 			this.contentContainer.children.unshift(
 				assistantHeader(
 					message,
 					timingByMessage.get(message),
 					thinkingByMessage.get(message),
+					presentation,
 					this.outputPad,
-					config.icons.assistant,
+					() => config,
+					() => renderEpoch,
 				),
 			);
 		};
@@ -301,7 +500,7 @@ export default function (pi: ExtensionAPI) {
 
 		const decoratedUserRebuild: UserRebuild = function () {
 			userRenderCache.delete(this);
-			if (typeof this.text === "string") resolveUserSentAt(this);
+			if (typeof this.text === "string") resolveUserPresentation(this);
 			originalUserRebuild.call(this);
 		};
 
@@ -310,10 +509,11 @@ export default function (pi: ExtensionAPI) {
 				return originalUserRender.call(this, width);
 			}
 			const cached = userRenderCache.get(this);
-			if (cached?.width === width) return cached.lines;
-			const sentAt = resolveUserSentAt(this);
-			const userActor = config.icons.user ? `${config.icons.user} You` : "You";
-			const naturalHeader = actorHeader(userActor, sentAt, width);
+			if (cached?.width === width && cached.epoch === renderEpoch) return cached.lines;
+			const presentation = resolveUserPresentation(this);
+			const userActor = iconLabel(config.icons.user, config.actors.user);
+			const timeField: HeaderField = { key: "time", text: themed("dim", formatTime(presentation.sentAt)) };
+			const naturalHeader = actorHeader(userActor, [timeField], width);
 			const maxBubbleWidth = Math.max(1, Math.min(88, Math.floor(width * 0.78)));
 			const longestLine = Math.max(1, ...this.text.split("\n").map((line) => visibleWidth(line)));
 			const desiredWidth = Math.max(
@@ -336,13 +536,13 @@ export default function (pi: ExtensionAPI) {
 				? rawBubbleLines.map((line) => rightAlign(line, width))
 				: rawBubbleLines;
 			const headerWidth = Math.max(1, bubbleWidth - this.outputPad * 2);
-			const headerContent = actorHeader(userActor, sentAt, headerWidth);
+			const headerContent = actorHeader(userActor, [timeField], headerWidth);
 			const headerIndent = alternating
 				? Math.max(0, width - bubbleWidth + this.outputPad)
 				: this.outputPad;
 			const header = `${" ".repeat(headerIndent)}${headerContent}`;
-			const lines = [...messageDivider(width), header, ...bubbleLines];
-			userRenderCache.set(this, { width, lines });
+			const lines = [...messageDivider(width, presentation.dateLabel), header, ...bubbleLines];
+			userRenderCache.set(this, { epoch: renderEpoch, width, lines });
 			return lines;
 		};
 
@@ -368,14 +568,62 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	function stopConfigWatcher(): void {
+		if (configReloadTimer) clearTimeout(configReloadTimer);
+		configReloadTimer = undefined;
+		configWatcher?.close();
+		configWatcher = undefined;
+	}
+
+	function startConfigWatcher(ctx: ExtensionContext): void {
+		stopConfigWatcher();
+		const path = configPath();
+		const watchedFile = basename(path);
+		const reload = () => {
+			configReloadTimer = undefined;
+			const loaded = loadConfig(path, config);
+			if (loaded.warning && loaded.warning !== lastConfigWarning) {
+				ctx.ui.notify(`pi-chat-layout: ${loaded.warning}`, "warning");
+			}
+			lastConfigWarning = loaded.warning;
+			if (sameConfig(config, loaded.config)) return;
+			config = loaded.config;
+			renderEpoch += 1;
+			ctx.ui.notify("pi-chat-layout: configuration reloaded", "info");
+		};
+		const scheduleReload = () => {
+			if (configReloadTimer) clearTimeout(configReloadTimer);
+			configReloadTimer = setTimeout(reload, 100);
+		};
+
+		try {
+			configWatcher = watch(dirname(path), (_eventType, filename) => {
+				if (filename !== null && filename.toString() !== watchedFile) return;
+				scheduleReload();
+			});
+			configWatcher.on("error", (error) => {
+				stopConfigWatcher();
+				ctx.ui.notify(`pi-chat-layout: config watcher stopped: ${error.message}`, "warning");
+			});
+		} catch (error) {
+			ctx.ui.notify(
+				`pi-chat-layout: could not watch ${path}: ${error instanceof Error ? error.message : String(error)}`,
+				"warning",
+			);
+		}
+	}
+
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
+		renderTheme = ctx.ui.theme;
 		const loaded = loadConfig();
 		config = loaded.config;
+		lastConfigWarning = loaded.warning;
 		if (loaded.warning) ctx.ui.notify(`pi-chat-layout: ${loaded.warning}`, "warning");
-		rememberHistoricalTimings(ctx);
+		rememberHistoricalState(ctx);
 		try {
 			decorateChatLayout();
+			startConfigWatcher(ctx);
 		} catch (error) {
 			ctx.ui.notify(
 				`pi-chat-layout: ${error instanceof Error ? error.message : String(error)}`,
@@ -386,26 +634,43 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_start", (event) => {
 		if (event.message.role === "user") {
-			queueUserTime(userMessageText(event.message), event.message.timestamp);
-		} else if (event.message.role === "assistant") {
-			activeAssistantThinkingLevel = pi.getThinkingLevel();
-			thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
+			queueUserPresentation(userMessageText(event.message), event.message.timestamp);
+			nextAssistantStep = 1;
+			return;
 		}
+		if (event.message.role !== "assistant") return;
+		activeAssistantThinkingLevel = pi.getThinkingLevel();
+		activeAssistantPresentation = {
+			kind: nextAssistantStep === 1 ? "primary" : "continuation",
+			step: nextAssistantStep,
+		};
+		nextAssistantStep += 1;
+		thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
+		presentationByMessage.set(event.message, activeAssistantPresentation);
 	});
 
 	pi.on("message_update", (event) => {
-		if (event.message.role !== "assistant" || activeAssistantThinkingLevel === undefined) return;
-		thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
+		if (event.message.role !== "assistant") return;
+		if (activeAssistantThinkingLevel !== undefined) {
+			thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
+		}
+		if (activeAssistantPresentation !== undefined) {
+			presentationByMessage.set(event.message, activeAssistantPresentation);
+		}
 	});
 
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant") return;
-
 		const thinkingLevel = activeAssistantThinkingLevel ?? pi.getThinkingLevel();
 		thinkingByMessage.set(event.message, thinkingLevel);
-		activeAssistantThinkingLevel = undefined;
 		const completedAt = Date.now();
 		const startedAt = parseTimestamp(event.message.timestamp) ?? completedAt;
+		if (activeAssistantPresentation !== undefined) {
+			activeAssistantPresentation.dateLabel = dateLabelFor(completedAt, false);
+			presentationByMessage.set(event.message, activeAssistantPresentation);
+		}
+		activeAssistantThinkingLevel = undefined;
+		activeAssistantPresentation = undefined;
 		timingByMessage.set(event.message, {
 			completedAt,
 			durationMs: Math.max(0, completedAt - startedAt),
@@ -413,6 +678,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
+		stopConfigWatcher();
 		restoreLayout?.();
+		renderTheme = undefined;
 	});
 }
