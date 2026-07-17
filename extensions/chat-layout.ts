@@ -145,33 +145,33 @@ function codeLanguageBadge(language: string): string {
 
 function polishedMarkdownTheme(base: MarkdownTheme): MarkdownTheme {
 	let codeBlockOpen = false;
+	let codeBlockLabel = "";
 	const highlightCode = base.highlightCode;
 	return {
 		...base,
 		heading(text: string): string {
 			return base.heading(text.replace(MARKDOWN_SUBHEADING_PREFIX, "› "));
 		},
-		codeBlockIndent: "",
-		codeBlock(text: string): string {
-			return `${base.codeBlockBorder("│")} ${base.codeBlock(text)}`;
+		codeBlockIndent: " ",
+		highlightCode(code: string, language?: string): string[] {
+			const lines = highlightCode
+				? highlightCode(code, language)
+				: code.split("\n").map((line) => base.codeBlock(line));
+			return ["", ...lines, ""];
 		},
-		highlightCode: highlightCode
-			? (code: string, language?: string) => {
-				const rail = `${base.codeBlockBorder("│")} `;
-				return highlightCode(code, language).map((line) => rail + line);
-			}
-			: undefined,
 		codeBlockBorder(text: string): string {
 			if (text === "```") {
 				if (!codeBlockOpen) {
 					codeBlockOpen = true;
-					return base.codeBlockBorder("╭─ CODE");
+					codeBlockLabel = "CODE";
+					return base.codeBlockBorder(`<<~${codeBlockLabel}`);
 				}
 				codeBlockOpen = false;
-				return base.codeBlockBorder("╰─");
+				return base.codeBlockBorder(codeBlockLabel);
 			}
 			codeBlockOpen = true;
-			return base.codeBlockBorder(`╭─ ${codeLanguageBadge(text.slice(3))}`);
+			codeBlockLabel = codeLanguageBadge(text.slice(3));
+			return base.codeBlockBorder(`<<~${codeBlockLabel}`);
 		},
 	};
 }
