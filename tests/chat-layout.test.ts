@@ -134,6 +134,84 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
+	it("styles assistant markdown without exposing source markers", async () => {
+		const runtime = await startRuntime();
+		const message = assistant({
+			content: [{
+				type: "text",
+				text: [
+					"### JavaScript",
+					"",
+					"Before",
+					"",
+					"```typescript",
+					"const value = 42;",
+					"```",
+					"",
+					"```text",
+					"done",
+					"```",
+					"",
+					"```",
+					"plain",
+					"```",
+				].join("\n"),
+			}],
+		});
+		const markdownTheme = {
+			...getMarkdownTheme(),
+			bold: (value: string) => `\x1b[1m${value}\x1b[22m`,
+		};
+		const lines = new AssistantMessageComponent(message, false, markdownTheme, "Thinking...", 1)
+			.render(80).map(stripAnsi);
+		const rendered = lines.join("\n");
+		expect(rendered).not.toContain("```");
+		expect(rendered).not.toContain("### JavaScript");
+		expect(rendered).toContain("› JavaScript");
+		expect(rendered).toContain("╭─ TS");
+		expect(rendered).toContain("│ const value = 42;");
+		expect(rendered).toContain("╭─ TXT");
+		expect(rendered).toContain("╭─ CODE");
+		expect(rendered.match(/╰─/g)).toHaveLength(3);
+		expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+		await runtime.shutdown();
+	});
+
+	it("animates active thinking on Pi's render cadence without styling normal italics", async () => {
+		const runtime = await startRuntime();
+		const completed = assistant({
+			content: [
+				{ type: "thinking", thinking: "Inspecting renderer behavior\n\nEvaluating alternatives" },
+				{ type: "text", text: "*Done*" },
+			],
+		});
+		const completedComponent = new AssistantMessageComponent(completed, false, getMarkdownTheme(), "Thinking...", 1);
+		const completedLines = completedComponent.render(32).map(stripAnsi);
+		const thinkingLine = completedLines.find((line) => line.includes("Inspecting"));
+		const textLine = completedLines.find((line) => line.includes("Done"));
+		expect(thinkingLine).toMatch(/^ \.oO  Inspecting/);
+		expect(completedLines.join("\n").match(/\.oO/g)).toHaveLength(2);
+		expect(textLine).not.toContain(".oO");
+		expect(completedLines.every((line) => visibleWidth(line) <= 32)).toBe(true);
+		expect(completedComponent.render(32)).toEqual(completedComponent.render(32));
+
+		const active = assistant({ content: [{ type: "thinking", thinking: "Still working" }] });
+		await runtime.emit("message_start", { message: active });
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const activeComponent = new AssistantMessageComponent(active, false, getMarkdownTheme(), "Thinking...", 1);
+		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n .    Still working");
+		vi.setSystemTime(400);
+		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n .o   Still working");
+		vi.setSystemTime(2_000);
+		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n      Still working");
+		vi.useRealTimers();
+		await runtime.emit("message_end", { message: active });
+		activeComponent.updateContent(active);
+		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n .oO  Still working");
+		await runtime.shutdown();
+	});
+
 	it("can replace the assistant model with a configured actor name", async () => {
 		setConfig({ actors: { assistant: { name: "Pi", mode: "replace" } } });
 		const message = assistant();

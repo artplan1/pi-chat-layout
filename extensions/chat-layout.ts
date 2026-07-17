@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
+	type MarkdownTheme,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -44,6 +45,7 @@ interface AssistantMessageContainer {
 	contentContainer: {
 		children: Component[];
 	};
+	markdownTheme: MarkdownTheme;
 	outputPad: number;
 	invalidate(): void;
 }
@@ -52,6 +54,12 @@ interface UserMessageContainer {
 	text: string;
 	outputPad: number;
 	invalidate(): void;
+}
+
+interface MarkdownComponent extends Component {
+	defaultTextStyle?: {
+		italic?: boolean;
+	};
 }
 
 interface HeaderField {
@@ -87,6 +95,33 @@ const USER_DATE_LABEL_KEY = Symbol.for("pi-chat-layout:user-date-label");
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+const ASSISTANT_MARKDOWN_THEME_KEY = Symbol.for("pi-chat-layout:assistant-markdown-theme");
+const THINKING_FRAMES = [".   ", ".o  ", ".oO ", " oO ", "  O ", "    "] as const;
+const THINKING_FRAME_INTERVAL_MS = 400;
+const CODE_LANGUAGE_BADGES: Readonly<Record<string, string>> = {
+	bash: "SH",
+	css: "CSS",
+	go: "GO",
+	html: "HTML",
+	javascript: "JS",
+	js: "JS",
+	jsx: "JSX",
+	json: "JSON",
+	markdown: "MD",
+	md: "MD",
+	python: "PY",
+	py: "PY",
+	rust: "RS",
+	sh: "SH",
+	shell: "SH",
+	sql: "SQL",
+	text: "TXT",
+	tsx: "TSX",
+	typescript: "TS",
+	ts: "TS",
+	yaml: "YAML",
+	yml: "YAML",
+};
 const TIME_FORMATTER = new Intl.DateTimeFormat([], {
 	hour: "2-digit",
 	minute: "2-digit",
@@ -99,7 +134,47 @@ const DATE_FORMATTER = new Intl.DateTimeFormat([], {
 	day: "numeric",
 });
 const formattedTimeCache = new Map<number, string>();
+const MARKDOWN_SUBHEADING_PREFIX = /#{3,6} /;
 let renderTheme: RenderTheme | undefined;
+
+function codeLanguageBadge(language: string): string {
+	const normalized = language.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+	if (!normalized) return "CODE";
+	return CODE_LANGUAGE_BADGES[normalized] ?? normalized.slice(0, 6).toUpperCase();
+}
+
+function polishedMarkdownTheme(base: MarkdownTheme): MarkdownTheme {
+	let codeBlockOpen = false;
+	const highlightCode = base.highlightCode;
+	return {
+		...base,
+		heading(text: string): string {
+			return base.heading(text.replace(MARKDOWN_SUBHEADING_PREFIX, "› "));
+		},
+		codeBlockIndent: "",
+		codeBlock(text: string): string {
+			return `${base.codeBlockBorder("│")} ${base.codeBlock(text)}`;
+		},
+		highlightCode: highlightCode
+			? (code: string, language?: string) => {
+				const rail = `${base.codeBlockBorder("│")} `;
+				return highlightCode(code, language).map((line) => rail + line);
+			}
+			: undefined,
+		codeBlockBorder(text: string): string {
+			if (text === "```") {
+				if (!codeBlockOpen) {
+					codeBlockOpen = true;
+					return base.codeBlockBorder("╭─ CODE");
+				}
+				codeBlockOpen = false;
+				return base.codeBlockBorder("╰─");
+			}
+			codeBlockOpen = true;
+			return base.codeBlockBorder(`╭─ ${codeLanguageBadge(text.slice(3))}`);
+		},
+	};
+}
 
 function isThinkingLevel(value: string): value is ThinkingLevel {
 	return THINKING_LEVELS.has(value as ThinkingLevel);
@@ -107,6 +182,60 @@ function isThinkingLevel(value: string): value is ThinkingLevel {
 
 function themed(color: ThemeColor, text: string): string {
 	return renderTheme?.fg(color, text) ?? text;
+}
+
+function isThinkingMarkdown(component: Component): component is MarkdownComponent {
+	return (component as MarkdownComponent).defaultTextStyle?.italic === true;
+}
+
+function thinkingBlock(content: Component, active: boolean, color: ThemeColor): Component {
+	let cachedWidth: number | undefined;
+	let cachedContentLines: string[] | undefined;
+	let cachedMarker: string | undefined;
+	let cachedLines: string[] | undefined;
+	return {
+		render(width: number): string[] {
+			const marker = active
+				? THINKING_FRAMES[Math.floor(Date.now() / THINKING_FRAME_INTERVAL_MS) % THINKING_FRAMES.length]
+				: ".oO ";
+			const markerText = `${marker} `;
+			const markerWidth = visibleWidth(markerText);
+			if (width <= markerWidth) return content.render(width);
+			if (cachedWidth !== width || cachedContentLines === undefined) {
+				cachedWidth = width;
+				cachedContentLines = content.render(width - markerWidth);
+				cachedLines = undefined;
+			}
+			if (cachedMarker === marker && cachedLines !== undefined) return cachedLines;
+			const prefix = themed(color, markerText);
+			const continuation = " ".repeat(markerWidth);
+			cachedMarker = marker;
+			let paragraphStart = true;
+			cachedLines = cachedContentLines.map((line) => {
+				const blank = line.replace(/\x1b\[[0-9;]*m/g, "").trim() === "";
+				if (blank) {
+					paragraphStart = true;
+					return continuation + line;
+				}
+				if (!paragraphStart) return continuation + line;
+				paragraphStart = false;
+				if (line.startsWith(" ")) return ` ${prefix}${line.slice(1)}`;
+				const styledPadding = line.match(/^((?:\x1b\[[0-9;]*m)+) /);
+				if (styledPadding !== null) {
+					return ` ${prefix}${styledPadding[1]}${line.slice(styledPadding[0].length)}`;
+				}
+				return prefix + line;
+			});
+			return cachedLines;
+		},
+		invalidate() {
+			cachedWidth = undefined;
+			cachedContentLines = undefined;
+			cachedMarker = undefined;
+			cachedLines = undefined;
+			content.invalidate();
+		},
+	};
 }
 
 function bold(text: string): string {
@@ -344,6 +473,7 @@ export default function (pi: ExtensionAPI) {
 	let timingByMessage = new WeakMap<AssistantMessage, Timing>();
 	let thinkingByMessage = new WeakMap<AssistantMessage, ThinkingLevel>();
 	let presentationByMessage = new WeakMap<AssistantMessage, AssistantPresentation>();
+	let activeAssistantMessages = new WeakSet<AssistantMessage>();
 	let activeAssistantThinkingLevel: ThinkingLevel | undefined;
 	let activeAssistantPresentation: AssistantPresentation | undefined;
 	let userRenderCache = new WeakMap<UserMessageContainer, { epoch: number; width: number; lines: string[] }>();
@@ -398,6 +528,7 @@ export default function (pi: ExtensionAPI) {
 		timingByMessage = new WeakMap<AssistantMessage, Timing>();
 		thinkingByMessage = new WeakMap<AssistantMessage, ThinkingLevel>();
 		presentationByMessage = new WeakMap<AssistantMessage, AssistantPresentation>();
+		activeAssistantMessages = new WeakSet<AssistantMessage>();
 		activeAssistantThinkingLevel = undefined;
 		activeAssistantPresentation = undefined;
 		userRenderCache = new WeakMap<UserMessageContainer, { epoch: number; width: number; lines: string[] }>();
@@ -477,8 +608,22 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const decoratedAssistantUpdate: AssistantUpdate = function (message) {
+			const state = this as unknown as Record<PropertyKey, unknown>;
+			let markdownTheme = state[ASSISTANT_MARKDOWN_THEME_KEY] as MarkdownTheme | undefined;
+			if (markdownTheme === undefined) {
+				markdownTheme = polishedMarkdownTheme(this.markdownTheme);
+				state[ASSISTANT_MARKDOWN_THEME_KEY] = markdownTheme;
+			}
+			this.markdownTheme = markdownTheme;
 			originalAssistantUpdate.call(this, message);
 			if (!this.contentContainer || !Array.isArray(this.contentContainer.children)) return;
+			const thinkingActive = activeAssistantMessages.has(message);
+			for (let index = 0; index < this.contentContainer.children.length; index += 1) {
+				const child = this.contentContainer.children[index];
+				if (isThinkingMarkdown(child)) {
+					this.contentContainer.children[index] = thinkingBlock(child, thinkingActive, "dim");
+				}
+			}
 			const presentation = presentationByMessage.get(message);
 			this.contentContainer.children.unshift(
 				assistantHeader(
@@ -639,6 +784,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (event.message.role !== "assistant") return;
+		activeAssistantMessages.add(event.message);
 		activeAssistantThinkingLevel = pi.getThinkingLevel();
 		activeAssistantPresentation = {
 			kind: nextAssistantStep === 1 ? "primary" : "continuation",
@@ -651,6 +797,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_update", (event) => {
 		if (event.message.role !== "assistant") return;
+		activeAssistantMessages.add(event.message);
 		if (activeAssistantThinkingLevel !== undefined) {
 			thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
 		}
@@ -661,6 +808,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant") return;
+		activeAssistantMessages.delete(event.message);
 		const thinkingLevel = activeAssistantThinkingLevel ?? pi.getThinkingLevel();
 		thinkingByMessage.set(event.message, thinkingLevel);
 		const completedAt = Date.now();
