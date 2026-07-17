@@ -5,6 +5,8 @@ import { join } from "node:path";
 export type ChatLayout = "stacked" | "alternating";
 export type AssistantNameMode = "prefix" | "replace";
 export type HeaderMetadata = "thinking" | "time" | "duration" | "tokens" | "cost";
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
 
 const HEADER_METADATA = new Set<HeaderMetadata>([
 	"thinking",
@@ -19,6 +21,7 @@ export interface ChatLayoutConfig {
 	icons: {
 		user: string;
 		assistant: string;
+		thinking: Partial<Record<ThinkingLevelName, string>>;
 	};
 	actors: {
 		user: string;
@@ -37,6 +40,7 @@ export const DEFAULT_CONFIG: ChatLayoutConfig = {
 	icons: {
 		user: "👤",
 		assistant: "🤖",
+		thinking: {},
 	},
 	actors: {
 		user: "You",
@@ -69,7 +73,7 @@ export function parseConfig(value: unknown): LoadedConfig {
 		else warnings.push('"layout" must be "stacked" or "alternating".');
 	}
 
-	const icons = { ...DEFAULT_CONFIG.icons };
+	const icons = structuredClone(DEFAULT_CONFIG.icons);
 	if (input.icons !== undefined) {
 		if (typeof input.icons !== "object" || input.icons === null || Array.isArray(input.icons)) {
 			warnings.push('"icons" must be an object.');
@@ -79,6 +83,22 @@ export function parseConfig(value: unknown): LoadedConfig {
 				if (iconInput[actor] === undefined) continue;
 				if (typeof iconInput[actor] === "string") icons[actor] = iconInput[actor];
 				else warnings.push(`"icons.${actor}" must be a string.`);
+			}
+			if (iconInput.thinking !== undefined) {
+				if (
+					typeof iconInput.thinking !== "object" ||
+					iconInput.thinking === null ||
+					Array.isArray(iconInput.thinking)
+				) {
+					warnings.push('"icons.thinking" must be an object.');
+				} else {
+					const thinkingInput = iconInput.thinking as Record<string, unknown>;
+					for (const level of THINKING_LEVELS) {
+						if (thinkingInput[level] === undefined) continue;
+						if (typeof thinkingInput[level] === "string") icons.thinking[level] = thinkingInput[level];
+						else warnings.push(`"icons.thinking.${level}" must be a string.`);
+					}
+				}
 			}
 		}
 	}

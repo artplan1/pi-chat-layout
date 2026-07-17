@@ -6,10 +6,10 @@ describe("parseConfig", () => {
 		expect(parseConfig(undefined)).toEqual({ config: DEFAULT_CONFIG });
 	});
 
-	it("accepts layout, icon, actor name, and header metadata overrides", () => {
+	it("accepts layout, icons, actor names, and header metadata overrides", () => {
 		expect(parseConfig({
 			layout: "stacked",
-			icons: { user: "ME", assistant: "AI" },
+			icons: { user: "ME", assistant: "AI", thinking: { medium: "THINK" } },
 			actors: {
 				user: "Artem",
 				assistant: { name: "Pi", mode: "replace" },
@@ -18,7 +18,7 @@ describe("parseConfig", () => {
 		})).toEqual({
 			config: {
 				layout: "stacked",
-				icons: { user: "ME", assistant: "AI" },
+				icons: { user: "ME", assistant: "AI", thinking: { medium: "THINK" } },
 				actors: {
 					user: "Artem",
 					assistant: { name: "Pi", mode: "replace" },
@@ -32,13 +32,14 @@ describe("parseConfig", () => {
 	it("falls back per field and reports invalid values", () => {
 		const result = parseConfig({
 			layout: "diagonal",
-			icons: { user: 42 },
+			icons: { user: 42, thinking: { high: 42 } },
 			actors: { user: false, assistant: { name: 42, mode: "suffix" } },
 			header: { metadata: ["latency"] },
 		});
 		expect(result.config).toEqual(DEFAULT_CONFIG);
 		expect(result.warning).toContain('"layout"');
 		expect(result.warning).toContain('"icons.user"');
+		expect(result.warning).toContain('"icons.thinking.high"');
 		expect(result.warning).toContain('"actors.user"');
 		expect(result.warning).toContain('"actors.assistant.name"');
 		expect(result.warning).toContain('"actors.assistant.mode"');

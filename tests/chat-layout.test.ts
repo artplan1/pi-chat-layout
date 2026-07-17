@@ -272,6 +272,7 @@ describe.sequential("chat layout renderer", () => {
 	});
 
 	it("preserves thinking level across streaming message clones", async () => {
+		setConfig({ icons: { thinking: { xhigh: "󱩖" } } });
 		const runtime = await startRuntime([], "xhigh");
 		const start = assistant({ content: [{ type: "text", text: "A" }] });
 		await runtime.emit("message_start", { message: { ...start } });
@@ -280,14 +281,14 @@ describe.sequential("chat layout renderer", () => {
 		const update = { ...start, content: [{ type: "text" as const, text: "AB" }] };
 		await runtime.emit("message_update", { message: update });
 		component.updateContent(update);
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("×  xhigh  ×");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("×  󱩖 xhigh  ×");
 		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("0↑ 0↓");
 		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("$0");
 
 		const final = { ...update };
 		await runtime.emit("message_end", { message: final });
 		component.updateContent(final);
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("×  xhigh  ×");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("×  󱩖 xhigh  ×");
 		await runtime.shutdown();
 	});
 

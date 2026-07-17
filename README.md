@@ -99,13 +99,31 @@ On narrow terminals, low-priority fields are removed before the header is trunca
 
 ### Icons
 
-Icons are arbitrary strings. Use an empty string to hide an icon:
+Actor icons are arbitrary strings. Use an empty string to hide one:
 
 ```json
 {
   "icons": {
     "user": "",
     "assistant": "AI"
+  }
+}
+```
+
+`icons.thinking` optionally maps individual reasoning levels to icons. Omitted levels keep their text label without an icon. This Nerd Fonts example uses the Material Design lightbulb intensity family; configure a Nerd Font or `Symbols Nerd Font Mono` fallback in the terminal:
+
+```json
+{
+  "icons": {
+    "thinking": {
+      "off": "\udb83\ude50",
+      "minimal": "\udb86\ude4e",
+      "low": "\udb86\ude50",
+      "medium": "\udb86\ude52",
+      "high": "\udb86\ude54",
+      "xhigh": "\udb86\ude56",
+      "max": "\udb81\udee8"
+    }
   }
 }
 ```

@@ -366,6 +366,7 @@ function assistantFields(
 	message: AssistantMessage,
 	timing: Timing | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
+	thinkingIcons: ChatLayoutConfig["icons"]["thinking"],
 	metadata: HeaderMetadata[],
 ): HeaderField[] {
 	const completedAt = timing?.completedAt ?? message.timestamp;
@@ -374,7 +375,8 @@ function assistantFields(
 		switch (item) {
 			case "thinking":
 				if (thinkingLevel !== undefined) {
-					fields.push({ key: item, text: themed(thinkingColor(thinkingLevel), thinkingLevel) });
+					const label = iconLabel(thinkingIcons[thinkingLevel] ?? "", thinkingLevel);
+					fields.push({ key: item, text: themed(thinkingColor(thinkingLevel), label) });
 				}
 				break;
 			case "time":
@@ -419,7 +421,13 @@ function assistantHeader(
 			const config = getConfig();
 			const horizontalPadding = Math.min(padding, Math.max(0, Math.floor((width - 1) / 2)));
 			const contentWidth = Math.max(1, width - horizontalPadding * 2);
-			const fields = assistantFields(message, timing, thinkingLevel, config.header.metadata);
+			const fields = assistantFields(
+				message,
+				timing,
+				thinkingLevel,
+				config.icons.thinking,
+				config.header.metadata,
+			);
 			const continuation = presentation?.kind === "continuation" && !presentation.dateLabel;
 			let header: string;
 			let insetHeader: string;
