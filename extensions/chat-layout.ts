@@ -34,6 +34,12 @@ interface AssistantPresentation {
 	kind: "primary" | "continuation";
 	step: number;
 	dateLabel?: string;
+	thinkingSeed?: number;
+}
+
+interface ActiveAssistantState extends AssistantPresentation {
+	thinkingLevel: ThinkingLevel;
+	thinkingSeed: number;
 }
 
 interface UserPresentation {
@@ -96,7 +102,7 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 const ASSISTANT_MARKDOWN_THEME_KEY = Symbol.for("pi-chat-layout:assistant-markdown-theme");
-const THINKING_FRAMES = [".   ", ".o  ", ".oO ", " oO ", "  O ", "    "] as const;
+const THINKING_GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ";
 const THINKING_FRAME_INTERVAL_MS = 400;
 const CODE_LANGUAGE_BADGES: Readonly<Record<string, string>> = {
 	bash: "SH",
@@ -188,29 +194,37 @@ function isThinkingMarkdown(component: Component): component is MarkdownComponen
 	return (component as MarkdownComponent).defaultTextStyle?.italic === true;
 }
 
-function thinkingBlock(content: Component, active: boolean, color: ThemeColor): Component {
+function thinkingMarker(blockSeed: number, frameIndex: number): string {
+	let randomState = (blockSeed + frameIndex) >>> 0;
+	let marker = "";
+	for (let index = 0; index < 4; index += 1) {
+		randomState = Math.imul(randomState ^ 0x9e3779b9, 0x85ebca6b) >>> 0;
+		randomState = (randomState ^ (randomState >>> 13)) >>> 0;
+		marker += THINKING_GLYPHS[randomState % THINKING_GLYPHS.length];
+	}
+	return marker;
+}
+
+function thinkingBlock(content: Component, active: boolean, blockSeed: number): Component {
 	let cachedWidth: number | undefined;
 	let cachedContentLines: string[] | undefined;
-	let cachedMarker: string | undefined;
+	let cachedFrameIndex: number | undefined;
 	let cachedLines: string[] | undefined;
 	return {
 		render(width: number): string[] {
-			const marker = active
-				? THINKING_FRAMES[Math.floor(Date.now() / THINKING_FRAME_INTERVAL_MS) % THINKING_FRAMES.length]
-				: ".oO ";
-			const markerText = `${marker} `;
-			const markerWidth = visibleWidth(markerText);
+			const frameIndex = active ? Math.floor(Date.now() / THINKING_FRAME_INTERVAL_MS) : 0;
+			const markerWidth = visibleWidth(`${thinkingMarker(blockSeed, frameIndex)} `);
 			if (width <= markerWidth) return content.render(width);
 			if (cachedWidth !== width || cachedContentLines === undefined) {
 				cachedWidth = width;
 				cachedContentLines = content.render(width - markerWidth);
 				cachedLines = undefined;
 			}
-			if (cachedMarker === marker && cachedLines !== undefined) return cachedLines;
-			const prefix = themed(color, markerText);
+			if (cachedFrameIndex === frameIndex && cachedLines !== undefined) return cachedLines;
 			const continuation = " ".repeat(markerWidth);
-			cachedMarker = marker;
+			cachedFrameIndex = frameIndex;
 			let paragraphStart = true;
+			let paragraphIndex = 0;
 			cachedLines = cachedContentLines.map((line) => {
 				const blank = line.replace(/\x1b\[[0-9;]*m/g, "").trim() === "";
 				if (blank) {
@@ -219,6 +233,9 @@ function thinkingBlock(content: Component, active: boolean, color: ThemeColor): 
 				}
 				if (!paragraphStart) return continuation + line;
 				paragraphStart = false;
+				const markerText = `${thinkingMarker(blockSeed + paragraphIndex, frameIndex)} `;
+				const prefix = themed(active ? "accent" : "dim", markerText);
+				paragraphIndex += 1;
 				if (line.startsWith(" ")) return ` ${prefix}${line.slice(1)}`;
 				const styledPadding = line.match(/^((?:\x1b\[[0-9;]*m)+) /);
 				if (styledPadding !== null) {
@@ -231,7 +248,7 @@ function thinkingBlock(content: Component, active: boolean, color: ThemeColor): 
 		invalidate() {
 			cachedWidth = undefined;
 			cachedContentLines = undefined;
-			cachedMarker = undefined;
+			cachedFrameIndex = undefined;
 			cachedLines = undefined;
 			content.invalidate();
 		},
@@ -482,11 +499,11 @@ export default function (pi: ExtensionAPI) {
 	let thinkingByMessage = new WeakMap<AssistantMessage, ThinkingLevel>();
 	let presentationByMessage = new WeakMap<AssistantMessage, AssistantPresentation>();
 	let activeAssistantMessages = new WeakSet<AssistantMessage>();
-	let activeAssistantThinkingLevel: ThinkingLevel | undefined;
-	let activeAssistantPresentation: AssistantPresentation | undefined;
+	let activeAssistantState: ActiveAssistantState | undefined;
 	let userRenderCache = new WeakMap<UserMessageContainer, { epoch: number; width: number; lines: string[] }>();
 	let pendingUserPresentations = new Map<string, UserPresentation[]>();
 	let nextAssistantStep = 1;
+	let nextThinkingSeed = 1;
 	let lastMessageDay: string | undefined;
 	let restoreLayout: (() => void) | undefined;
 	let renderEpoch = 0;
@@ -532,16 +549,23 @@ export default function (pi: ExtensionAPI) {
 		return presentation;
 	}
 
+	function applyActiveAssistantState(message: AssistantMessage): void {
+		activeAssistantMessages.add(message);
+		if (activeAssistantState === undefined) return;
+		thinkingByMessage.set(message, activeAssistantState.thinkingLevel);
+		presentationByMessage.set(message, activeAssistantState);
+	}
+
 	function rememberHistoricalState(ctx: ExtensionContext): void {
 		timingByMessage = new WeakMap<AssistantMessage, Timing>();
 		thinkingByMessage = new WeakMap<AssistantMessage, ThinkingLevel>();
 		presentationByMessage = new WeakMap<AssistantMessage, AssistantPresentation>();
 		activeAssistantMessages = new WeakSet<AssistantMessage>();
-		activeAssistantThinkingLevel = undefined;
-		activeAssistantPresentation = undefined;
+		activeAssistantState = undefined;
 		userRenderCache = new WeakMap<UserMessageContainer, { epoch: number; width: number; lines: string[] }>();
 		pendingUserPresentations = new Map<string, UserPresentation[]>();
 		nextAssistantStep = 1;
+		nextThinkingSeed = 1;
 		lastMessageDay = undefined;
 		let thinkingLevel: ThinkingLevel | undefined;
 		let includeFirstDate = true;
@@ -567,9 +591,11 @@ export default function (pi: ExtensionAPI) {
 				kind: nextAssistantStep === 1 ? "primary" : "continuation",
 				step: nextAssistantStep,
 				dateLabel: dateLabelFor(displayedAt, includeFirstDate),
+				thinkingSeed: nextThinkingSeed,
 			});
 			includeFirstDate = false;
 			nextAssistantStep += 1;
+			nextThinkingSeed += 1;
 			if (thinkingLevel !== undefined) thinkingByMessage.set(entry.message, thinkingLevel);
 			if (completedAt === undefined || startedAt === undefined) continue;
 			timingByMessage.set(entry.message, {
@@ -626,13 +652,14 @@ export default function (pi: ExtensionAPI) {
 			originalAssistantUpdate.call(this, message);
 			if (!this.contentContainer || !Array.isArray(this.contentContainer.children)) return;
 			const thinkingActive = activeAssistantMessages.has(message);
+			const presentation = presentationByMessage.get(message);
+			const thinkingSeed = presentation?.thinkingSeed ?? 0;
 			for (let index = 0; index < this.contentContainer.children.length; index += 1) {
 				const child = this.contentContainer.children[index];
 				if (isThinkingMarkdown(child)) {
-					this.contentContainer.children[index] = thinkingBlock(child, thinkingActive, "dim");
+					this.contentContainer.children[index] = thinkingBlock(child, thinkingActive, thinkingSeed + index);
 				}
 			}
-			const presentation = presentationByMessage.get(message);
 			this.contentContainer.children.unshift(
 				assistantHeader(
 					message,
@@ -792,41 +819,34 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (event.message.role !== "assistant") return;
-		activeAssistantMessages.add(event.message);
-		activeAssistantThinkingLevel = pi.getThinkingLevel();
-		activeAssistantPresentation = {
+		activeAssistantState = {
+			thinkingLevel: pi.getThinkingLevel(),
+			thinkingSeed: nextThinkingSeed,
 			kind: nextAssistantStep === 1 ? "primary" : "continuation",
 			step: nextAssistantStep,
 		};
+		nextThinkingSeed += 1;
 		nextAssistantStep += 1;
-		thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
-		presentationByMessage.set(event.message, activeAssistantPresentation);
+		applyActiveAssistantState(event.message);
 	});
 
 	pi.on("message_update", (event) => {
 		if (event.message.role !== "assistant") return;
-		activeAssistantMessages.add(event.message);
-		if (activeAssistantThinkingLevel !== undefined) {
-			thinkingByMessage.set(event.message, activeAssistantThinkingLevel);
-		}
-		if (activeAssistantPresentation !== undefined) {
-			presentationByMessage.set(event.message, activeAssistantPresentation);
-		}
+		applyActiveAssistantState(event.message);
 	});
 
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant") return;
 		activeAssistantMessages.delete(event.message);
-		const thinkingLevel = activeAssistantThinkingLevel ?? pi.getThinkingLevel();
+		const thinkingLevel = activeAssistantState?.thinkingLevel ?? pi.getThinkingLevel();
 		thinkingByMessage.set(event.message, thinkingLevel);
 		const completedAt = Date.now();
 		const startedAt = parseTimestamp(event.message.timestamp) ?? completedAt;
-		if (activeAssistantPresentation !== undefined) {
-			activeAssistantPresentation.dateLabel = dateLabelFor(completedAt, false);
-			presentationByMessage.set(event.message, activeAssistantPresentation);
+		if (activeAssistantState !== undefined) {
+			activeAssistantState.dateLabel = dateLabelFor(completedAt, false);
+			presentationByMessage.set(event.message, activeAssistantState);
 		}
-		activeAssistantThinkingLevel = undefined;
-		activeAssistantPresentation = undefined;
+		activeAssistantState = undefined;
 		timingByMessage.set(event.message, {
 			completedAt,
 			durationMs: Math.max(0, completedAt - startedAt),

@@ -62,6 +62,15 @@ function stripAnsi(value: string): string {
 	return value.replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g, "");
 }
 
+const markerTheme = {
+	fg(color: string, value: string): string {
+		if (color === "accent") return `\x1b[31m${value}\x1b[39m`;
+		if (color === "dim") return `\x1b[2m${value}\x1b[22m`;
+		return value;
+	},
+	bold: (value: string) => value,
+};
+
 function setConfig(config: unknown): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-chat-layout-"));
 	createdDirs.push(dir);
@@ -188,38 +197,99 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
-	it("animates active thinking on Pi's render cadence without styling normal italics", async () => {
-		const runtime = await startRuntime();
+	it("keeps completed thinking on a static dim Matrix marker", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const runtime = await startRuntime([], "high", markerTheme);
 		const completed = assistant({
 			content: [
 				{ type: "thinking", thinking: "Inspecting renderer behavior\n\nEvaluating alternatives" },
 				{ type: "text", text: "*Done*" },
 			],
 		});
-		const completedComponent = new AssistantMessageComponent(completed, false, getMarkdownTheme(), "Thinking...", 1);
-		const completedLines = completedComponent.render(32).map(stripAnsi);
-		const thinkingLine = completedLines.find((line) => line.includes("Inspecting"));
-		const textLine = completedLines.find((line) => line.includes("Done"));
-		expect(thinkingLine).toMatch(/^ \.oO  Inspecting/);
-		expect(completedLines.join("\n").match(/\.oO/g)).toHaveLength(2);
-		expect(textLine).not.toContain(".oO");
-		expect(completedLines.every((line) => visibleWidth(line) <= 32)).toBe(true);
-		expect(completedComponent.render(32)).toEqual(completedComponent.render(32));
+		await runtime.emit("message_start", { message: completed });
+		await runtime.emit("message_end", { message: completed });
+		const component = new AssistantMessageComponent(completed, false, getMarkdownTheme(), "Thinking...", 1);
+		const first = component.render(32);
+		const lines = first.map(stripAnsi);
+		const thinkingLine = first.find((line) => line.includes("Inspecting"));
+		const firstParagraph = lines.find((line) => line.includes("Inspecting"));
+		const secondParagraph = lines.find((line) => line.includes("Evaluating"));
+		expect(thinkingLine).toMatch(/\x1b\[2m[ｱ-ﾝ]{4} \x1b\[22m/);
+		expect(lines.find((line) => line.includes("Inspecting"))).toMatch(/^ [ｱ-ﾝ]{4} Inspecting/);
+		expect(lines.join("\n").match(/[ｱ-ﾝ]{4}/g)).toHaveLength(2);
+		expect(firstParagraph?.slice(0, firstParagraph.indexOf("Inspecting")))
+			.not.toBe(secondParagraph?.slice(0, secondParagraph.indexOf("Evaluating")));
+		expect(lines.find((line) => line.includes("Done"))).not.toMatch(/[ｱ-ﾝ]{4}/);
+		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
 
-		const active = assistant({ content: [{ type: "thinking", thinking: "Still working" }] });
-		await runtime.emit("message_start", { message: active });
+		vi.setSystemTime(40_000);
+		expect(component.render(32)).toEqual(first);
+		await runtime.shutdown();
+	});
+
+	it("renders accent Matrix frames that remain stable across streaming clones and advance every 400ms", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
-		const activeComponent = new AssistantMessageComponent(active, false, getMarkdownTheme(), "Thinking...", 1);
-		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n .    Still working");
+		const runtime = await startRuntime([], "high", markerTheme);
+		const active = assistant({
+			content: [
+				{ type: "thinking", thinking: "First line\ncontinuation\n\nSecond paragraph" },
+				{ type: "text", text: "*Normal italic*" },
+			],
+		});
+		await runtime.emit("message_start", { message: active });
+		const component = new AssistantMessageComponent(active, false, getMarkdownTheme(), "Thinking...", 1);
+		const firstRender = component.render(32);
+		const frameZero = firstRender.map(stripAnsi);
+		const firstLine = frameZero.find((line) => line.includes("First line"));
+		const continuation = frameZero.find((line) => line.includes("continuation"));
+		const secondParagraph = frameZero.find((line) => line.includes("Second paragraph"));
+		const styledFirstLine = firstRender.find((line) => line.includes("First line"));
+		const normalItalic = firstRender.find((line) => line.includes("Normal italic"));
+		expect(component.render(32)).toEqual(firstRender);
+		expect(styledFirstLine).toMatch(/\x1b\[31m[ｱ-ﾝ]{4} \x1b\[39m/);
+		expect(normalItalic).not.toContain("\x1b[31m");
+		expect(firstLine).toMatch(/^ [ｱ-ﾝ]{4} First line/);
+		expect(continuation).toMatch(/^ {6}continuation/);
+		expect(secondParagraph).toMatch(/^ [ｱ-ﾝ]{4} Second paragraph/);
+		expect(firstLine?.slice(0, firstLine.indexOf("First line")))
+			.not.toBe(secondParagraph?.slice(0, secondParagraph.indexOf("Second paragraph")));
+		expect(frameZero.every((line) => visibleWidth(line) <= 32)).toBe(true);
+		expect(visibleWidth(firstLine?.slice(0, firstLine.indexOf("First line")) ?? "")).toBe(6);
+
+		const update = { ...active };
+		await runtime.emit("message_update", { message: update });
+		component.updateContent(update);
+		expect(component.render(32).map(stripAnsi).find((line) => line.includes("First line"))).toBe(firstLine);
+
 		vi.setSystemTime(400);
-		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n .o   Still working");
-		vi.setSystemTime(2_000);
-		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n      Still working");
-		vi.useRealTimers();
-		await runtime.emit("message_end", { message: active });
-		activeComponent.updateContent(active);
-		expect(activeComponent.render(32).map(stripAnsi).join("\n")).toContain("\n .oO  Still working");
+		const frameOne = component.render(32).map(stripAnsi);
+		expect(frameOne.find((line) => line.includes("First line"))).not.toBe(firstLine);
+		expect(frameOne.find((line) => line.includes("Second paragraph"))).not.toBe(secondParagraph);
+		expect(frameOne.every((line) => visibleWidth(line) <= 32)).toBe(true);
+		await runtime.shutdown();
+	});
+
+	it("gives distinct active thinking blocks independent deterministic sequences", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(800);
+		const runtime = await startRuntime();
+		const active = assistant({
+			content: [
+				{ type: "thinking", thinking: "Alpha block" },
+				{ type: "text", text: "Between" },
+				{ type: "thinking", thinking: "Beta block" },
+			],
+		});
+		await runtime.emit("message_start", { message: active });
+		const component = new AssistantMessageComponent(active, false, getMarkdownTheme(), "Thinking...", 1);
+		const lines = component.render(32).map(stripAnsi);
+		const alpha = lines.find((line) => line.includes("Alpha block"));
+		const beta = lines.find((line) => line.includes("Beta block"));
+		expect(alpha?.slice(0, alpha.indexOf("Alpha block")))
+			.not.toBe(beta?.slice(0, beta.indexOf("Beta block")));
+		expect(component.render(32).map(stripAnsi)).toEqual(lines);
 		await runtime.shutdown();
 	});
 
