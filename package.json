@@ -1,6 +1,6 @@
 {
   "name": "pi-chat-layout",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packageManager": "pnpm@11.8.0",
   "description": "Messenger-style conversation layout for the Pi coding agent TUI",
   "type": "module",
@@ -22,12 +22,14 @@
     "extensions",
     "src",
     "README.md",
+    "docs/images",
     "LICENSE"
   ],
   "pi": {
     "extensions": [
       "./extensions/chat-layout.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/artplan1/pi-chat-layout/main/docs/images/chat-layout-dark.png"
   },
   "scripts": {
     "test": "vitest run",
