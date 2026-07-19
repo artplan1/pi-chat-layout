@@ -140,7 +140,7 @@ Assistant headers can show:
 - input/output token counts;
 - reported request cost.
 
-Later assistant steps omit repeated dividers and actor labels, but keep a compact diagnostic line on the assistant side, such as `step 2 › 21:03:42 › 1.6s › 1.6k↑ 26↓ › $0.01`. While a step is running, its start time remains visible; duration, tokens, and cost appear when it completes. Historical sessions also receive date separators when the calendar day changes.
+Later assistant steps omit repeated dividers and actor labels, but keep a compact diagnostic line on the assistant side, such as `step 2 › 21:03:42 › 1.6s › 1.6k↑ 26↓ › $0.01`. While a step is running, its start time remains visible; duration, tokens, and cost appear when it completes. Historical sessions receive `VAULT LOG // <date>` separators when the calendar day changes.
 
 User headers show the message submission time. Historical metadata is reconstructed from Pi session entries and is not written back to the session or sent to the model.
 

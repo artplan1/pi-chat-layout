@@ -446,7 +446,7 @@ describe.sequential("chat layout renderer", () => {
 		]);
 		const lines = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1)
 			.render(80).map(stripAnsi);
-		expect(lines.some((line) => line.includes("2025") && line.includes("─"))).toBe(true);
+		expect(lines.some((line) => line.includes("VAULT LOG //") && line.includes("2025") && line.includes("─"))).toBe(true);
 		await runtime.shutdown();
 	});
 
@@ -468,7 +468,7 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.emit("message_end", { message: final });
 		component.updateContent(final);
 		const lines = component.render(80).map(stripAnsi);
-		expect(lines.some((line) => line.includes("2025") && line.includes("─"))).toBe(true);
+		expect(lines.some((line) => line.includes("VAULT LOG //") && line.includes("2025") && line.includes("─"))).toBe(true);
 		await runtime.shutdown();
 	});
 

@@ -362,7 +362,7 @@ function stepHeader(step: number, fields: HeaderField[], width: number): string 
 
 function messageDivider(width: number, dateLabel?: string): string[] {
 	if (!dateLabel) return ["", themed("dim", "─".repeat(Math.max(0, width))), ""];
-	const label = ` ${dateLabel} `;
+	const label = ` VAULT LOG // ${dateLabel} `;
 	if (visibleWidth(label) >= width) return ["", themed("dim", truncateToWidth(label, width)), ""];
 	const remaining = width - visibleWidth(label);
 	const left = Math.floor(remaining / 2);
