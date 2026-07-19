@@ -1,161 +1,107 @@
 # pi-chat-layout
 
-Messenger-style conversation layout for the [Pi coding agent](https://github.com/earendil-works/pi).
+[![npm version](https://badgen.net/npm/v/pi-chat-layout)](https://www.npmjs.com/package/pi-chat-layout)
+[![npm downloads](https://badgen.net/npm/dm/pi-chat-layout)](https://www.npmjs.com/package/pi-chat-layout)
+[![license](https://badgen.net/github/license/artplan1/pi-chat-layout)](LICENSE)
 
-It makes long terminal sessions easier to scan with actor headers, responsive metadata, turn grouping, date separators, configurable names and icons, and optional alternating alignment.
+A messenger-style conversation layout for the [Pi coding agent](https://github.com/earendil-works/pi). It adds actor headers, responsive metadata, turn grouping, date separators, and optional alternating alignment without imposing a model or terminal-font theme.
 
 ```text
-
 ────────────────────────────────────────────────────────────
-
                                       👤 You  ·  21:03:30
-
                                       Continue the refactor
 
-
 ────────────────────────────────────────────────────────────
-
- 🤖 gpt-5.6-sol  ·  high  ·  21:03:35  ·  4.0s  ·  1.2k↑ 340↓  ·  $0.0041
-
+ 🤖 openai/gpt-5.6  ·  high  ·  21:03:35  ·  4.0s  ·  1.2k↑ 340↓  ·  $0.0041
  Done. The tests pass.
 ```
 
 ## Install
 
-From npm:
+After the npm release:
 
 ```bash
 pi install npm:pi-chat-layout
 ```
 
-From GitHub:
+From the repository:
 
 ```bash
 pi install git:github.com/artplan1/pi-chat-layout
 ```
 
-Try it for one run:
+Load it for one run with `pi -e npm:pi-chat-layout`. Remove the installed package with:
 
 ```bash
-pi -e npm:pi-chat-layout
+pi remove npm:pi-chat-layout
 ```
 
 ## Configuration
 
-Create `~/.pi/agent/chat-layout.json`:
+Create `~/.pi/agent/chat-layout.json`. Every field is optional; the defaults are alternating layout, `👤 You`, `🤖 <actual model ID>`, separate lower-case thinking metadata, and a plain date separator. No Nerd Font is required.
 
 ```json
 {
   "layout": "alternating",
   "icons": {
     "user": "👤",
-    "assistant": "🤖"
+    "assistant": "🤖",
+    "thinking": { "high": "" }
   },
   "actors": {
     "user": "You",
-    "assistant": {
-      "name": "Pi",
-      "mode": "prefix"
-    }
+    "assistant": { "name": "", "mode": "prefix" }
   },
+  "models": { "aliases": {} },
   "header": {
-    "metadata": ["thinking", "time", "duration", "tokens", "cost"]
-  }
+    "metadata": ["thinking", "time", "duration", "tokens", "cost"],
+    "style": "separate"
+  },
+  "dates": { "label": "{date}" }
 }
 ```
 
-`PI_CODING_AGENT_DIR` is respected when Pi uses a custom configuration directory.
+`PI_CODING_AGENT_DIR` is respected. Configuration changes hot-reload; invalid JSON keeps the last valid configuration and reports a warning.
 
-### Layouts
+### Identity and formatting
 
-- `alternating` — assistant messages stay left-aligned and user messages move to the right, like a messenger app.
-- `stacked` — both actors stay left-aligned, like a conventional transcript.
+`icons.user`, `icons.assistant`, and `icons.thinking.<level>` accept arbitrary strings; use `""` to hide an icon. `actors.assistant.name` can `prefix` or `replace` the model ID.
 
-### Actor names
+Model aliases are explicit exact matches. An alias for `openai/gpt-5.6` does not affect `openai/gpt-5.6-preview`; unmatched models always display their actual ID.
 
-Set `actors.user` to the user label. Assistant labels can either prefix or replace the actual model ID:
+`header.metadata` controls the visible assistant metadata and its order. `header.style` is one of:
 
-```json
-{
-  "actors": {
-    "user": "Artem",
-    "assistant": {
-      "name": "Pi",
-      "mode": "prefix"
-    }
-  }
-}
-```
+- `separate` (default): model identity and thinking level are separate header fields.
+- `compact`: the thinking icon, assistant identity, and upper-case level are combined as one field.
 
-- `prefix` renders `Pi gpt-5.6-sol`.
-- `replace` renders `Pi` and hides the model ID.
-- An empty assistant name preserves the model ID regardless of mode.
+On narrow terminals, cost and token fields are removed before duration, thinking, and time.
 
-### Header metadata
+### Compact themed example
 
-`header.metadata` controls assistant metadata and its display order. Supported values are `thinking`, `time`, `duration`, `tokens`, and `cost`. Use an empty array to show only the actor label. Assistant identity and telemetry stay together on the left.
-
-On narrow terminals, low-priority fields are removed before the header is truncated. Cost and token counts disappear first; the completion time is retained longest.
-
-### Icons
-
-Actor icons are arbitrary strings. Use an empty string to hide one:
+This explicit configuration produces a compact identity such as `✦ ◆ SOL / HIGH` and a themed date label, while leaving the neutral defaults portable:
 
 ```json
 {
   "icons": {
-    "user": "",
-    "assistant": "AI"
-  }
+    "assistant": "◆",
+    "thinking": { "high": "✦" }
+  },
+  "models": {
+    "aliases": { "openai-codex/gpt-5.6-sol": "SOL" }
+  },
+  "thinking": { "markerGlyphs": ["ｱ", "ｲ", "ｳ", "ｴ", "ｵ", "ｶ", "ｷ", "ｸ"] },
+  "header": { "style": "compact" },
+  "dates": { "label": "SESSION LOG // {date}" }
 }
 ```
 
-`icons.thinking` optionally maps individual reasoning levels to icons. Omitted levels keep their text label without an icon. This Nerd Fonts example uses the Material Design lightbulb intensity family; configure a Nerd Font or `Symbols Nerd Font Mono` fallback in the terminal:
+`thinking.markerGlyphs` is a non-empty array of visible strings. Each marker deterministically selects four entries and reserves a stable column based on the widest entry. Omit it for portable ASCII progress markers. `dates.label` replaces every `{date}` with the localized calendar date.
 
-```json
-{
-  "icons": {
-    "thinking": {
-      "off": "\udb83\ude50",
-      "minimal": "\udb86\ude4e",
-      "low": "\udb86\ude50",
-      "medium": "\udb86\ude52",
-      "high": "\udb86\ude54",
-      "xhigh": "\udb86\ude56",
-      "max": "\udb81\udee8"
-    }
-  }
-}
-```
+## Behavior and compatibility
 
-Configuration changes are watched and applied automatically. Invalid JSON keeps the last valid configuration active and shows a warning.
+User headers show submission time. Assistant headers show the thinking level active when the response started, completion time, duration, tokens, and cost when available. Follow-up assistant steps retain compact diagnostics without repeating the actor header.
 
-## Displayed metadata
-
-Assistant headers can show:
-
-- configured actor name and actual model ID;
-- thinking level active when the response started;
-- completion time and response duration;
-- input/output token counts;
-- reported request cost.
-
-Later assistant steps omit repeated dividers and actor labels, but keep a compact left-aligned diagnostic line, such as `02 › 21:03:42 › 1.6s › 1.6k↑ 26↓ › $0.01`. While a step is running, its start time remains visible; duration, tokens, and cost appear when it completes. Historical sessions receive `VAULT LOG // <date>` separators when the calendar day changes.
-
-User headers show the message submission time. Historical metadata is reconstructed from Pi session entries and is not written back to the session or sent to the model.
-
-`Ctrl+O` continues to control Pi tool-call expansion. It does not expand chat-layout headers.
-
-## Performance
-
-Rendered headers and formatted timestamps are cached by terminal width and configuration revision. Exchange grouping removes repeated transcript rows in tool-heavy exchanges.
-
-## Compatibility
-
-Tested with Pi `0.80.9`; peer dependencies accept compatible `0.80.x` releases from `0.80.6`.
-
-Pi currently has no public renderer hook for built-in user and assistant messages. This extension decorates the exported `UserMessageComponent` and `AssistantMessageComponent` at runtime. A startup capability probe disables the decoration and preserves stock rendering when those internals are incompatible.
-
+The extension decorates Pi's built-in message components because Pi does not yet provide a public renderer hook. A startup compatibility probe leaves stock rendering in place if those internals are incompatible. Release checks use Pi `0.80.6`; core Pi packages remain host-provided peer dependencies.
 ## Development
 
 ```bash
@@ -163,21 +109,6 @@ pnpm install
 pnpm check
 pnpm pack:dry
 ```
-
-Regression coverage includes:
-
-- historical timestamps and date boundaries;
-- live configuration reloads;
-- streaming assistant-message clones;
-- thinking-level persistence;
-- responsive metadata and terminal width constraints;
-- token and cost formatting;
-- assistant continuation grouping;
-- public theme integration;
-- compatibility probing;
-- OSC shell markers and vertical spacing;
-- actor name prefix and replacement modes;
-- stacked and alternating layouts.
 
 ## License
 

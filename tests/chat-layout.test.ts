@@ -110,7 +110,7 @@ async function startRuntime(
 }
 
 describe.sequential("chat layout renderer", () => {
-	it("alternates alignment with configured icons and prefixed actor names", async () => {
+	it("alternates alignment with configured icons and separate metadata", async () => {
 		setConfig({
 			layout: "alternating",
 			icons: { user: "ME", assistant: "AI" },
@@ -138,10 +138,10 @@ describe.sequential("chat layout renderer", () => {
 		).render(80).map(stripAnsi);
 
 		const userHeader = userLines.find((line) => line.includes("ME Artem"));
-		const assistantHeader = assistantLines.find((line) => line.includes("AI Pi test-model"));
+		const assistantHeader = assistantLines.find((line) => line.includes("AI Pi test/test-model"));
 		expect(userHeader?.indexOf("ME Artem")).toBeGreaterThan(1);
-		expect(assistantHeader?.indexOf("AI Pi test-model")).toBe(1);
-		expect(assistantHeader).toContain("AI Pi test-model  ·  high");
+		expect(assistantHeader?.indexOf("AI Pi test/test-model")).toBe(1);
+		expect(assistantHeader).toContain("AI Pi test/test-model  ·  high");
 		expect([...userLines, ...assistantLines].every((line) => visibleWidth(line) <= 80)).toBe(true);
 		await runtime.shutdown();
 	});
@@ -200,7 +200,7 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
-	it("keeps completed thinking on a static dim Matrix marker", async () => {
+	it("keeps completed thinking on static neutral activity markers", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const runtime = await startRuntime([], "high", markerTheme);
@@ -218,12 +218,12 @@ describe.sequential("chat layout renderer", () => {
 		const thinkingLine = first.find((line) => line.includes("Inspecting"));
 		const firstParagraph = lines.find((line) => line.includes("Inspecting"));
 		const secondParagraph = lines.find((line) => line.includes("Evaluating"));
-		expect(thinkingLine).toMatch(/\x1b\[2m[ｱ-ﾝ]{4} \x1b\[22m/);
-		expect(lines.find((line) => line.includes("Inspecting"))).toMatch(/^ [ｱ-ﾝ]{4} Inspecting/);
-		expect(lines.join("\n").match(/[ｱ-ﾝ]{4}/g)).toHaveLength(2);
+		expect(thinkingLine).toMatch(/\x1b\[2m[o.]{4} \x1b\[22m/);
+		expect(lines.find((line) => line.includes("Inspecting"))).toMatch(/^ [o.]{4} Inspecting/);
+		expect(lines.join("\n").match(/[o.]{4}/g)).toHaveLength(2);
 		expect(firstParagraph?.slice(0, firstParagraph.indexOf("Inspecting")))
 			.not.toBe(secondParagraph?.slice(0, secondParagraph.indexOf("Evaluating")));
-		expect(lines.find((line) => line.includes("Done"))).not.toMatch(/[ｱ-ﾝ]{4}/);
+		expect(lines.find((line) => line.includes("Done"))).not.toMatch(/[o.]{4}/);
 		expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
 
 		vi.setSystemTime(40_000);
@@ -231,7 +231,75 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
-	it("renders accent Matrix frames that remain stable across streaming clones and advance every 400ms", async () => {
+	it("renders explicit themed thinking markers with a compact aliased header", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		setConfig({
+			icons: { assistant: "", thinking: { high: "󱩔" } },
+			models: { aliases: { "openai-codex/gpt-5.6-sol": "SOL" } },
+			header: { style: "compact" },
+			thinking: { markerGlyphs: [..."ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"] },
+		});
+		const message = assistant({
+			provider: "openai-codex",
+			model: "gpt-5.6-sol",
+			content: [{ type: "thinking", thinking: "Themed thinking" }],
+		});
+		const runtime = await startRuntime([], "high", markerTheme);
+		await runtime.emit("message_start", { message });
+		const lines = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1)
+			.render(40).map(stripAnsi);
+		expect(lines.join("\n")).toContain("󱩔 SOL / HIGH");
+		expect(lines.find((line) => line.includes("Themed thinking"))).toMatch(/^ [ｱ-ﾝ]{4} Themed thinking/);
+		await runtime.shutdown();
+	});
+
+	it("hot-reloads thinking marker glyph pools for existing components", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const path = setConfig({ thinking: { markerGlyphs: ["a", "b", "c", "d"] } });
+		const message = assistant({ content: [{ type: "thinking", thinking: "Reloaded thinking" }] });
+		const runtime = await startRuntime([], "high", markerTheme);
+		await runtime.emit("message_start", { message });
+		const component = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1);
+		expect(component.render(40).map(stripAnsi).join("\n")).toMatch(/[abcd]{4} Reloaded thinking/);
+
+		writeFileSync(path, JSON.stringify({ thinking: { markerGlyphs: ["W", "X", "Y", "Z"] } }));
+		await vi.waitFor(() => {
+			expect(runtime.notify).toHaveBeenCalledWith("pi-chat-layout: configuration reloaded", "info");
+		});
+		expect(component.render(40).map(stripAnsi).join("\n")).toMatch(/[WXYZ]{4} Reloaded thinking/);
+		await runtime.shutdown();
+	});
+
+	it("keeps mixed-width thinking glyphs inside one stable marker column", async () => {
+		vi.useFakeTimers();
+		const path = setConfig({ thinking: { markerGlyphs: ["a", "界"] } });
+		const message = assistant({
+			content: [{ type: "thinking", thinking: "First paragraph wraps here\n\nSecond paragraph wraps here" }],
+		});
+		const runtime = await startRuntime([], "high", markerTheme);
+		await runtime.emit("message_start", { message });
+		const component = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1);
+
+		for (const timestamp of [400, 800]) {
+			vi.setSystemTime(timestamp);
+			const lines = component.render(20).map(stripAnsi);
+			expect(lines.every((line) => visibleWidth(line) <= 20)).toBe(true);
+			for (const text of ["First", "Second"]) {
+				const line = lines.find((candidate) => candidate.includes(text));
+				expect(visibleWidth(line?.slice(0, line.indexOf(text)) ?? "")).toBe(10);
+			}
+		}
+		writeFileSync(path, JSON.stringify({ thinking: { markerGlyphs: ["·", "界"] } }));
+		await vi.waitFor(() => {
+			expect(runtime.notify).toHaveBeenCalledWith("pi-chat-layout: configuration reloaded", "info");
+		});
+		expect(component.render(20).map(stripAnsi).every((line) => visibleWidth(line) <= 20)).toBe(true);
+		await runtime.shutdown();
+	});
+
+	it("renders neutral activity frames that remain stable across streaming clones and advance every 400ms", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(0);
 		const runtime = await startRuntime([], "high", markerTheme);
@@ -251,11 +319,11 @@ describe.sequential("chat layout renderer", () => {
 		const styledFirstLine = firstRender.find((line) => line.includes("First line"));
 		const normalItalic = firstRender.find((line) => line.includes("Normal italic"));
 		expect(component.render(32)).toEqual(firstRender);
-		expect(styledFirstLine).toMatch(/\x1b\[31m[ｱ-ﾝ]{4} \x1b\[39m/);
+		expect(styledFirstLine).toMatch(/\x1b\[31m[o.]{4} \x1b\[39m/);
 		expect(normalItalic).not.toContain("\x1b[31m");
-		expect(firstLine).toMatch(/^ [ｱ-ﾝ]{4} First line/);
+		expect(firstLine).toMatch(/^ [o.]{4} First line/);
 		expect(continuation).toMatch(/^ {6}continuation/);
-		expect(secondParagraph).toMatch(/^ [ｱ-ﾝ]{4} Second paragraph/);
+		expect(secondParagraph).toMatch(/^ [o.]{4} Second paragraph/);
 		expect(firstLine?.slice(0, firstLine.indexOf("First line")))
 			.not.toBe(secondParagraph?.slice(0, secondParagraph.indexOf("Second paragraph")));
 		expect(frameZero.every((line) => visibleWidth(line) <= 32)).toBe(true);
@@ -312,6 +380,44 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
+	it("uses exact configured aliases and preserves unmatched provider/model IDs", async () => {
+		setConfig({
+			icons: { assistant: "" },
+			models: { aliases: { "openai-codex/gpt-5.6-sol": "SOL" } },
+		});
+		const runtime = await startRuntime();
+		for (const [provider, model, label] of [
+			["openai-codex", "gpt-5.6-sol", "SOL"],
+			["openai-codex", "gpt-5.6-sol-preview", "openai-codex/gpt-5.6-sol-preview"],
+			["unknown-provider", "unknown-model", "unknown-provider/unknown-model"],
+		]) {
+			const lines = new AssistantMessageComponent(
+				assistant({ provider, model }),
+				false,
+				getMarkdownTheme(),
+				"Thinking...",
+				1,
+			).render(100).map(stripAnsi);
+			expect(lines.join("\n")).toContain(`${label}  ·`);
+		}
+		await runtime.shutdown();
+	});
+
+	it("combines configured icons, aliases, and thinking level in compact headers", async () => {
+		setConfig({
+			icons: { assistant: "AI", thinking: { high: "THINK" } },
+			models: { aliases: { "openai-codex/gpt-5.6-sol": "SOL" } },
+			header: { style: "compact" },
+		});
+		const message = assistant({ provider: "openai-codex", model: "gpt-5.6-sol" });
+		const runtime = await startRuntime();
+		await runtime.emit("message_start", { message });
+		const lines = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1)
+			.render(100).map(stripAnsi);
+		expect(lines.join("\n")).toContain("THINK AI SOL / HIGH  ·");
+		await runtime.shutdown();
+	});
+
 	it("supports a stacked layout", async () => {
 		setConfig({ layout: "stacked" });
 		const timestamp = Date.now();
@@ -344,8 +450,24 @@ describe.sequential("chat layout renderer", () => {
 		await secondRuntime.shutdown();
 	});
 
-	it("preserves thinking level across streaming message clones", async () => {
-		setConfig({ icons: { thinking: { xhigh: "󱩖" } } });
+	it("ignores out-of-range historical timestamps", async () => {
+		const invalidTimestamp = Number.MAX_VALUE;
+		const userMessage = { role: "user", content: [{ type: "text", text: "Invalid" }], timestamp: invalidTimestamp };
+		const assistantMessage = assistant({ timestamp: invalidTimestamp });
+		const runtime = await startRuntime([
+			{ type: "message", message: userMessage, timestamp: invalidTimestamp },
+			{ type: "message", message: assistantMessage, timestamp: invalidTimestamp },
+		]);
+		const userLines = new UserMessageComponent("Invalid", getMarkdownTheme(), 1).render(80).map(stripAnsi);
+		const assistantLines = new AssistantMessageComponent(assistantMessage, false, getMarkdownTheme(), "Thinking...", 1)
+			.render(80).map(stripAnsi);
+		expect([...userLines, ...assistantLines].join("\n")).not.toContain("Invalid Date");
+		expect(assistantLines.join("\n")).toContain("--:--:--");
+		await runtime.shutdown();
+	});
+
+	it("preserves compact thinking identity across streaming message clones", async () => {
+		setConfig({ icons: { thinking: { xhigh: "THINK" } }, header: { style: "compact" } });
 		const runtime = await startRuntime([], "xhigh");
 		const start = assistant({ content: [{ type: "text", text: "A" }] });
 		await runtime.emit("message_start", { message: { ...start } });
@@ -354,14 +476,14 @@ describe.sequential("chat layout renderer", () => {
 		const update = { ...start, content: [{ type: "text" as const, text: "AB" }] };
 		await runtime.emit("message_update", { message: update });
 		component.updateContent(update);
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("·  󱩖 xhigh  ·");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("THINK 🤖 test/test-model / XHIGH  ·");
 		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("0↑ 0↓");
 		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("$0");
 
 		const final = { ...update };
 		await runtime.emit("message_end", { message: final });
 		component.updateContent(final);
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("·  󱩖 xhigh  ·");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("THINK 🤖 test/test-model / XHIGH  ·");
 		await runtime.shutdown();
 	});
 
@@ -412,6 +534,17 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
+	it("rounds duration boundaries without a 60-second remainder", async () => {
+		for (const [durationMs, expected] of [[59_950, "1m 00s"], [119_500, "2m 00s"]]) {
+			const message = assistant({ timestamp: 0 });
+			const runtime = await startRuntime([{ type: "message", message, timestamp: durationMs }]);
+			const lines = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1)
+				.render(100).map(stripAnsi).join("\n");
+			expect(lines).toContain(expected);
+			await runtime.shutdown();
+		}
+	});
+
 	it("keeps step diagnostics on the assistant side without repeated actor headers", async () => {
 		const now = Date.now();
 		const userMessage = { role: "user", content: [{ type: "text", text: "Check it" }], timestamp: now - 3_000 };
@@ -429,7 +562,7 @@ describe.sequential("chat layout renderer", () => {
 			.render(80).map(stripAnsi);
 		expect(primary.some((line) => line.includes("────"))).toBe(true);
 		expect(continuation.some((line) => line.includes("────"))).toBe(false);
-		expect(continuation.join("\n")).not.toContain("🤖 test-model");
+		expect(continuation.join("\n")).not.toContain("🤖 test/test-model");
 		const stepLine = continuation.find((line) => line.includes("02"));
 		expect(stepLine?.indexOf("02")).toBe(1);
 		expect(stepLine).toContain("02  ›");
@@ -439,7 +572,8 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.shutdown();
 	});
 
-	it("adds date labels when historical messages cross calendar days", async () => {
+	it("renders custom date labels when historical messages cross calendar days", async () => {
+		setConfig({ dates: { label: "SESSION LOG // {date}" } });
 		const firstTimestamp = new Date("2025-01-01T12:00:00").getTime();
 		const secondTimestamp = new Date("2025-01-02T12:00:00").getTime();
 		const userMessage = { role: "user", content: [{ type: "text", text: "Before midnight" }], timestamp: firstTimestamp };
@@ -450,7 +584,26 @@ describe.sequential("chat layout renderer", () => {
 		]);
 		const lines = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1)
 			.render(80).map(stripAnsi);
-		expect(lines.some((line) => line.includes("VAULT LOG //") && line.includes("2025") && line.includes("─"))).toBe(true);
+		expect(lines.some((line) => line.includes("SESSION LOG //") && line.includes("2025") && line.includes("─"))).toBe(true);
+		await runtime.shutdown();
+	});
+
+	it("uses a plain divider for empty date labels at normal and narrow widths", async () => {
+		setConfig({ dates: { label: "" } });
+		const firstTimestamp = new Date("2025-01-01T12:00:00").getTime();
+		const secondTimestamp = new Date("2025-01-02T12:00:00").getTime();
+		const userMessage = { role: "user", content: [{ type: "text", text: "Before midnight" }], timestamp: firstTimestamp };
+		const message = assistant({ timestamp: secondTimestamp });
+		const runtime = await startRuntime([
+			{ type: "message", message: userMessage, timestamp: new Date(firstTimestamp).toISOString() },
+			{ type: "message", message, timestamp: new Date(secondTimestamp).toISOString() },
+		]);
+		const component = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1);
+		for (const width of [80, 8]) {
+			const lines = component.render(width).map(stripAnsi);
+			expect(lines).toContain("─".repeat(width));
+			expect(lines.some((line) => line.trim() === "")).toBe(true);
+		}
 		await runtime.shutdown();
 	});
 
@@ -472,7 +625,7 @@ describe.sequential("chat layout renderer", () => {
 		await runtime.emit("message_end", { message: final });
 		component.updateContent(final);
 		const lines = component.render(80).map(stripAnsi);
-		expect(lines.some((line) => line.includes("VAULT LOG //") && line.includes("2025") && line.includes("─"))).toBe(true);
+		expect(lines.some((line) => line.includes("2025") && line.includes("─"))).toBe(true);
 		await runtime.shutdown();
 	});
 
@@ -498,13 +651,13 @@ describe.sequential("chat layout renderer", () => {
 			{ type: "message", message, timestamp: new Date(now).toISOString() },
 		]);
 		const component = new AssistantMessageComponent(message, false, getMarkdownTheme(), "Thinking...", 1);
-		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("Pi test-model");
+		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("Pi test/test-model");
 
 		writeFileSync(path, JSON.stringify({ actors: { assistant: { name: "Pi", mode: "prefix" } } }));
 		await vi.waitFor(() => {
 			expect(runtime.notify).toHaveBeenCalledWith("pi-chat-layout: configuration reloaded", "info");
 		});
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("Pi test-model");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("Pi test/test-model");
 		await runtime.shutdown();
 	});
 

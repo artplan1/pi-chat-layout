@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 export type ChatLayout = "stacked" | "alternating";
 export type AssistantNameMode = "prefix" | "replace";
+export type AssistantHeaderStyle = "separate" | "compact";
 export type HeaderMetadata = "thinking" | "time" | "duration" | "tokens" | "cost";
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
@@ -30,8 +31,18 @@ export interface ChatLayoutConfig {
 			mode: AssistantNameMode;
 		};
 	};
+	models: {
+		aliases: Record<string, string>;
+	};
+	thinking: {
+		markerGlyphs?: string[];
+	};
 	header: {
 		metadata: HeaderMetadata[];
+		style: AssistantHeaderStyle;
+	};
+	dates: {
+		label: string;
 	};
 }
 
@@ -49,8 +60,16 @@ export const DEFAULT_CONFIG: ChatLayoutConfig = {
 			mode: "prefix",
 		},
 	},
+	models: {
+		aliases: {},
+	},
+	thinking: { markerGlyphs: undefined },
 	header: {
 		metadata: ["thinking", "time", "duration", "tokens", "cost"],
+		style: "separate",
+	},
+	dates: {
+		label: "{date}",
 	},
 };
 
@@ -59,13 +78,17 @@ export interface LoadedConfig {
 	warning?: string;
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function parseConfig(value: unknown): LoadedConfig {
 	if (value === undefined) return { config: structuredClone(DEFAULT_CONFIG) };
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+	if (!isObject(value)) {
 		return { config: structuredClone(DEFAULT_CONFIG), warning: "Configuration must be a JSON object." };
 	}
 
-	const input = value as Record<string, unknown>;
+	const input = value;
 	const warnings: string[] = [];
 	let layout = DEFAULT_CONFIG.layout;
 	if (input.layout !== undefined) {
@@ -75,27 +98,22 @@ export function parseConfig(value: unknown): LoadedConfig {
 
 	const icons = structuredClone(DEFAULT_CONFIG.icons);
 	if (input.icons !== undefined) {
-		if (typeof input.icons !== "object" || input.icons === null || Array.isArray(input.icons)) {
+		if (!isObject(input.icons)) {
 			warnings.push('"icons" must be an object.');
 		} else {
-			const iconInput = input.icons as Record<string, unknown>;
 			for (const actor of ["user", "assistant"] as const) {
-				if (iconInput[actor] === undefined) continue;
-				if (typeof iconInput[actor] === "string") icons[actor] = iconInput[actor];
+				if (input.icons[actor] === undefined) continue;
+				if (typeof input.icons[actor] === "string") icons[actor] = input.icons[actor];
 				else warnings.push(`"icons.${actor}" must be a string.`);
 			}
-			if (iconInput.thinking !== undefined) {
-				if (
-					typeof iconInput.thinking !== "object" ||
-					iconInput.thinking === null ||
-					Array.isArray(iconInput.thinking)
-				) {
+			if (input.icons.thinking !== undefined) {
+				if (!isObject(input.icons.thinking)) {
 					warnings.push('"icons.thinking" must be an object.');
 				} else {
-					const thinkingInput = iconInput.thinking as Record<string, unknown>;
 					for (const level of THINKING_LEVELS) {
-						if (thinkingInput[level] === undefined) continue;
-						if (typeof thinkingInput[level] === "string") icons.thinking[level] = thinkingInput[level];
+						const icon = input.icons.thinking[level];
+						if (icon === undefined) continue;
+						if (typeof icon === "string") icons.thinking[level] = icon;
 						else warnings.push(`"icons.thinking.${level}" must be a string.`);
 					}
 				}
@@ -105,51 +123,78 @@ export function parseConfig(value: unknown): LoadedConfig {
 
 	const actors = structuredClone(DEFAULT_CONFIG.actors);
 	if (input.actors !== undefined) {
-		if (typeof input.actors !== "object" || input.actors === null || Array.isArray(input.actors)) {
+		if (!isObject(input.actors)) {
 			warnings.push('"actors" must be an object.');
 		} else {
-			const actorInput = input.actors as Record<string, unknown>;
-			if (actorInput.user !== undefined) {
-				if (typeof actorInput.user === "string") actors.user = actorInput.user;
+			if (input.actors.user !== undefined) {
+				if (typeof input.actors.user === "string") actors.user = input.actors.user;
 				else warnings.push('"actors.user" must be a string.');
 			}
-			if (actorInput.assistant !== undefined) {
-				if (
-					typeof actorInput.assistant !== "object" ||
-					actorInput.assistant === null ||
-					Array.isArray(actorInput.assistant)
-				) {
+			if (input.actors.assistant !== undefined) {
+				if (!isObject(input.actors.assistant)) {
 					warnings.push('"actors.assistant" must be an object.');
 				} else {
-					const assistantInput = actorInput.assistant as Record<string, unknown>;
-					if (assistantInput.name !== undefined) {
-						if (typeof assistantInput.name === "string") actors.assistant.name = assistantInput.name;
-						else warnings.push('"actors.assistant.name" must be a string.');
+					if (input.actors.assistant.name !== undefined) {
+						if (typeof input.actors.assistant.name === "string") {
+							actors.assistant.name = input.actors.assistant.name;
+						} else warnings.push('"actors.assistant.name" must be a string.');
 					}
-					if (assistantInput.mode !== undefined) {
-						if (assistantInput.mode === "prefix" || assistantInput.mode === "replace") {
-							actors.assistant.mode = assistantInput.mode;
-						} else {
-							warnings.push('"actors.assistant.mode" must be "prefix" or "replace".');
-						}
+					if (input.actors.assistant.mode !== undefined) {
+						if (input.actors.assistant.mode === "prefix" || input.actors.assistant.mode === "replace") {
+							actors.assistant.mode = input.actors.assistant.mode;
+						} else warnings.push('"actors.assistant.mode" must be "prefix" or "replace".');
 					}
 				}
 			}
 		}
 	}
 
+	const aliases: Record<string, string> = {};
+	if (input.models !== undefined) {
+		if (!isObject(input.models)) {
+			warnings.push('"models" must be an object.');
+		} else if (input.models.aliases !== undefined) {
+			if (!isObject(input.models.aliases)) {
+				warnings.push('"models.aliases" must be an object.');
+			} else {
+				for (const [model, alias] of Object.entries(input.models.aliases)) {
+					if (model.trim() === "") warnings.push('"models.aliases" cannot contain an empty model ID.');
+					else if (typeof alias === "string") aliases[model] = alias;
+					else warnings.push(`"models.aliases.${model}" must be a string.`);
+				}
+			}
+		}
+	}
+
+	let markerGlyphs = DEFAULT_CONFIG.thinking.markerGlyphs;
+	if (input.thinking !== undefined) {
+		if (!isObject(input.thinking)) {
+			warnings.push('"thinking" must be an object.');
+		} else if (input.thinking.markerGlyphs !== undefined) {
+			if (!Array.isArray(input.thinking.markerGlyphs) || input.thinking.markerGlyphs.length === 0) {
+				warnings.push('"thinking.markerGlyphs" must be a non-empty array of visible strings.');
+			} else {
+				const validGlyphs = input.thinking.markerGlyphs.filter(
+					(glyph): glyph is string => typeof glyph === "string" && glyph.trim() !== "",
+				);
+				if (validGlyphs.length === input.thinking.markerGlyphs.length) markerGlyphs = validGlyphs;
+				else warnings.push('"thinking.markerGlyphs" must contain only non-empty visible strings.');
+			}
+		}
+	}
+
 	let metadata = [...DEFAULT_CONFIG.header.metadata];
+	let style = DEFAULT_CONFIG.header.style;
 	if (input.header !== undefined) {
-		if (typeof input.header !== "object" || input.header === null || Array.isArray(input.header)) {
+		if (!isObject(input.header)) {
 			warnings.push('"header" must be an object.');
 		} else {
-			const headerInput = input.header as Record<string, unknown>;
-			if (headerInput.metadata !== undefined) {
-				if (!Array.isArray(headerInput.metadata)) {
+			if (input.header.metadata !== undefined) {
+				if (!Array.isArray(input.header.metadata)) {
 					warnings.push('"header.metadata" must be an array.');
 				} else {
 					const nextMetadata: HeaderMetadata[] = [];
-					for (const value of headerInput.metadata) {
+					for (const value of input.header.metadata) {
 						if (typeof value !== "string" || !HEADER_METADATA.has(value as HeaderMetadata)) {
 							warnings.push(`Unknown header metadata: ${JSON.stringify(value)}.`);
 							continue;
@@ -157,14 +202,35 @@ export function parseConfig(value: unknown): LoadedConfig {
 						const item = value as HeaderMetadata;
 						if (!nextMetadata.includes(item)) nextMetadata.push(item);
 					}
-					if (headerInput.metadata.length === 0 || nextMetadata.length > 0) metadata = nextMetadata;
+					if (input.header.metadata.length === 0 || nextMetadata.length > 0) metadata = nextMetadata;
 				}
+			}
+			if (input.header.style !== undefined) {
+				if (input.header.style === "separate" || input.header.style === "compact") style = input.header.style;
+				else warnings.push('"header.style" must be "separate" or "compact".');
 			}
 		}
 	}
 
+	let dateLabel = DEFAULT_CONFIG.dates.label;
+	if (input.dates !== undefined) {
+		if (!isObject(input.dates)) warnings.push('"dates" must be an object.');
+		else if (input.dates.label !== undefined) {
+			if (typeof input.dates.label === "string") dateLabel = input.dates.label;
+			else warnings.push('"dates.label" must be a string.');
+		}
+	}
+
 	return {
-		config: { layout, icons, actors, header: { metadata } },
+		config: {
+			layout,
+			icons,
+			actors,
+			models: { aliases },
+			thinking: { markerGlyphs },
+			header: { metadata, style },
+			dates: { label: dateLabel },
+		},
 		warning: warnings.length > 0 ? warnings.join(" ") : undefined,
 	};
 }

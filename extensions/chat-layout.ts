@@ -17,7 +17,6 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
-	type AssistantNameMode,
 	configPath,
 	DEFAULT_CONFIG,
 	type ChatLayoutConfig,
@@ -102,7 +101,7 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 const ASSISTANT_MARKDOWN_THEME_KEY = Symbol.for("pi-chat-layout:assistant-markdown-theme");
-const THINKING_GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ";
+const THINKING_MARKERS = ["....", "o...", "oo..", "ooo.", "oooo"] as const;
 const THINKING_FRAME_INTERVAL_MS = 400;
 const CODE_LANGUAGE_BADGES: Readonly<Record<string, string>> = {
 	bash: "SH",
@@ -194,34 +193,69 @@ function isThinkingMarkdown(component: Component): component is MarkdownComponen
 	return (component as MarkdownComponent).defaultTextStyle?.italic === true;
 }
 
-function thinkingMarker(blockSeed: number, frameIndex: number): string {
+function thinkingMarker(blockSeed: number, frameIndex: number, markerGlyphs: string[] | undefined): string {
+	if (markerGlyphs === undefined) {
+		return THINKING_MARKERS[(blockSeed + frameIndex) % THINKING_MARKERS.length];
+	}
 	let randomState = (blockSeed + frameIndex) >>> 0;
 	let marker = "";
 	for (let index = 0; index < 4; index += 1) {
 		randomState = Math.imul(randomState ^ 0x9e3779b9, 0x85ebca6b) >>> 0;
 		randomState = (randomState ^ (randomState >>> 13)) >>> 0;
-		marker += THINKING_GLYPHS[randomState % THINKING_GLYPHS.length];
+		marker += markerGlyphs[randomState % markerGlyphs.length];
 	}
 	return marker;
 }
 
-function thinkingBlock(content: Component, active: boolean, blockSeed: number): Component {
+function thinkingMarkerWidth(markerGlyphs: string[] | undefined): number {
+	if (markerGlyphs === undefined) {
+		return Math.max(...THINKING_MARKERS.map((marker) => visibleWidth(marker))) + 1;
+	}
+	const maxGlyphWidth = Math.max(1, ...markerGlyphs.map((glyph) => visibleWidth(glyph)));
+	return maxGlyphWidth * 4 + 1;
+}
+
+function thinkingMarkerText(
+	blockSeed: number,
+	frameIndex: number,
+	markerGlyphs: string[] | undefined,
+	markerWidth: number,
+): string {
+	const marker = thinkingMarker(blockSeed, frameIndex, markerGlyphs);
+	return `${marker}${" ".repeat(Math.max(0, markerWidth - visibleWidth(marker) - 1))} `;
+}
+
+function thinkingBlock(
+	content: Component,
+	active: boolean,
+	blockSeed: number,
+	getConfig: () => ChatLayoutConfig,
+	getEpoch: () => number,
+): Component {
 	let cachedWidth: number | undefined;
 	let cachedContentLines: string[] | undefined;
+	let cachedEpoch: number | undefined;
 	let cachedFrameIndex: number | undefined;
 	let cachedLines: string[] | undefined;
 	return {
 		render(width: number): string[] {
+			const epoch = getEpoch();
+			const markerGlyphs = getConfig().thinking.markerGlyphs;
 			const frameIndex = active ? Math.floor(Date.now() / THINKING_FRAME_INTERVAL_MS) : 0;
-			const markerWidth = visibleWidth(`${thinkingMarker(blockSeed, frameIndex)} `);
+			const markerWidth = thinkingMarkerWidth(markerGlyphs);
 			if (width <= markerWidth) return content.render(width);
+			if (cachedEpoch !== epoch) {
+				cachedContentLines = undefined;
+				cachedLines = undefined;
+			}
 			if (cachedWidth !== width || cachedContentLines === undefined) {
 				cachedWidth = width;
 				cachedContentLines = content.render(width - markerWidth);
 				cachedLines = undefined;
 			}
-			if (cachedFrameIndex === frameIndex && cachedLines !== undefined) return cachedLines;
+			if (cachedEpoch === epoch && cachedFrameIndex === frameIndex && cachedLines !== undefined) return cachedLines;
 			const continuation = " ".repeat(markerWidth);
+			cachedEpoch = epoch;
 			cachedFrameIndex = frameIndex;
 			let paragraphStart = true;
 			let paragraphIndex = 0;
@@ -233,7 +267,7 @@ function thinkingBlock(content: Component, active: boolean, blockSeed: number): 
 				}
 				if (!paragraphStart) return continuation + line;
 				paragraphStart = false;
-				const markerText = `${thinkingMarker(blockSeed + paragraphIndex, frameIndex)} `;
+				const markerText = thinkingMarkerText(blockSeed + paragraphIndex, frameIndex, markerGlyphs, markerWidth);
 				const prefix = themed(active ? "accent" : "dim", markerText);
 				paragraphIndex += 1;
 				if (line.startsWith(" ")) return ` ${prefix}${line.slice(1)}`;
@@ -248,6 +282,7 @@ function thinkingBlock(content: Component, active: boolean, blockSeed: number): 
 		invalidate() {
 			cachedWidth = undefined;
 			cachedContentLines = undefined;
+			cachedEpoch = undefined;
 			cachedFrameIndex = undefined;
 			cachedLines = undefined;
 			content.invalidate();
@@ -260,7 +295,10 @@ function bold(text: string): string {
 }
 
 function parseTimestamp(value: unknown): number | undefined {
-	if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+	if (typeof value === "number") {
+		const timestamp = new Date(value).getTime();
+		return Number.isFinite(timestamp) ? timestamp : undefined;
+	}
 	if (value instanceof Date) {
 		const timestamp = value.getTime();
 		return Number.isFinite(timestamp) ? timestamp : undefined;
@@ -292,9 +330,10 @@ function calendarDay(timestamp: number): string {
 function formatDuration(durationMs: number): string {
 	if (durationMs < 1000) return `${durationMs}ms`;
 	const seconds = durationMs / 1000;
-	if (seconds < 60) return `${seconds.toFixed(1)}s`;
-	const minutes = Math.floor(seconds / 60);
-	const remainingSeconds = Math.round(seconds - minutes * 60);
+	const roundedSeconds = Math.round(seconds);
+	if (roundedSeconds < 60) return `${seconds.toFixed(1)}s`;
+	const minutes = Math.floor(roundedSeconds / 60);
+	const remainingSeconds = roundedSeconds % 60;
 	return `${minutes}m ${remainingSeconds.toString().padStart(2, "0")}s`;
 }
 
@@ -360,9 +399,9 @@ function stepHeader(step: number, fields: HeaderField[], width: number): string 
 	);
 }
 
-function messageDivider(width: number, dateLabel?: string): string[] {
-	if (!dateLabel) return ["", themed("dim", "─".repeat(Math.max(0, width))), ""];
-	const label = ` VAULT LOG // ${dateLabel} `;
+function messageDivider(width: number, dateLabel: string | undefined, template: string): string[] {
+	if (!dateLabel || template === "") return ["", themed("dim", "─".repeat(Math.max(0, width))), ""];
+	const label = ` ${template.replaceAll("{date}", dateLabel)} `;
 	if (visibleWidth(label) >= width) return ["", themed("dim", truncateToWidth(label, width)), ""];
 	const remaining = width - visibleWidth(label);
 	const left = Math.floor(remaining / 2);
@@ -374,25 +413,46 @@ function iconLabel(icon: string, label: string): string {
 	return [icon, label].filter(Boolean).join(" ");
 }
 
-function assistantActor(model: string, name: string, mode: AssistantNameMode): string {
-	if (!name) return model;
-	return mode === "replace" ? name : `${name} ${model}`;
+function modelKey(message: Pick<AssistantMessage, "provider" | "model">): string {
+	return `${message.provider}/${message.model}`;
+}
+
+function modelLabel(message: Pick<AssistantMessage, "provider" | "model">, aliases: Record<string, string>): string {
+	const key = modelKey(message);
+	return Object.hasOwn(aliases, key) ? aliases[key] : key;
+}
+
+function assistantActor(message: AssistantMessage, config: ChatLayoutConfig, thinkingLevel: ThinkingLevel | undefined): string {
+	const modelName = modelLabel(message, config.models.aliases);
+	const actor = !config.actors.assistant.name
+		? modelName
+		: config.actors.assistant.mode === "replace"
+			? config.actors.assistant.name
+			: `${config.actors.assistant.name} ${modelName}`;
+	const identity = iconLabel(config.icons.assistant, actor);
+	if (
+		config.header.style !== "compact" ||
+		!config.header.metadata.includes("thinking") ||
+		thinkingLevel === undefined
+	) {
+		return identity;
+	}
+	return iconLabel(config.icons.thinking[thinkingLevel] ?? "", `${identity} / ${thinkingLevel.toUpperCase()}`);
 }
 
 function assistantFields(
 	message: AssistantMessage,
 	timing: Timing | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
-	thinkingIcons: ChatLayoutConfig["icons"]["thinking"],
-	metadata: HeaderMetadata[],
+	config: ChatLayoutConfig,
 ): HeaderField[] {
 	const completedAt = timing?.completedAt ?? message.timestamp;
 	const fields: HeaderField[] = [];
-	for (const item of metadata) {
+	for (const item of config.header.metadata) {
 		switch (item) {
 			case "thinking":
-				if (thinkingLevel !== undefined) {
-					const label = iconLabel(thinkingIcons[thinkingLevel] ?? "", thinkingLevel);
+				if (thinkingLevel !== undefined && config.header.style === "separate") {
+					const label = iconLabel(config.icons.thinking[thinkingLevel] ?? "", thinkingLevel);
 					fields.push({ key: item, text: themed(thinkingColor(thinkingLevel), label) });
 				}
 				break;
@@ -438,13 +498,7 @@ function assistantHeader(
 			const config = getConfig();
 			const horizontalPadding = Math.min(padding, Math.max(0, Math.floor((width - 1) / 2)));
 			const contentWidth = Math.max(1, width - horizontalPadding * 2);
-			const fields = assistantFields(
-				message,
-				timing,
-				thinkingLevel,
-				config.icons.thinking,
-				config.header.metadata,
-			);
+			const fields = assistantFields(message, timing, thinkingLevel, config);
 			const continuation = presentation?.kind === "continuation" && !presentation.dateLabel;
 			let header: string;
 			let insetHeader: string;
@@ -452,14 +506,7 @@ function assistantHeader(
 				header = stepHeader(presentation.step, fields, contentWidth);
 				insetHeader = `${" ".repeat(horizontalPadding)}${header}`;
 			} else {
-				const actor = iconLabel(
-					config.icons.assistant,
-					assistantActor(
-						message.model,
-						config.actors.assistant.name,
-						config.actors.assistant.mode,
-					),
-				);
+				const actor = assistantActor(message, config, thinkingLevel);
 				header = actorHeader(actor, fields, contentWidth);
 				insetHeader = `${" ".repeat(horizontalPadding)}${header}`;
 			}
@@ -467,7 +514,7 @@ function assistantHeader(
 			cachedEpoch = epoch;
 			cachedLines = continuation
 				? ["", insetHeader]
-				: [...messageDivider(width, presentation?.dateLabel), insetHeader];
+				: [...messageDivider(width, presentation?.dateLabel, config.dates.label), insetHeader];
 			return cachedLines;
 		},
 		invalidate() {
@@ -657,7 +704,13 @@ export default function (pi: ExtensionAPI) {
 			for (let index = 0; index < this.contentContainer.children.length; index += 1) {
 				const child = this.contentContainer.children[index];
 				if (isThinkingMarkdown(child)) {
-					this.contentContainer.children[index] = thinkingBlock(child, thinkingActive, thinkingSeed + index);
+					this.contentContainer.children[index] = thinkingBlock(
+						child,
+						thinkingActive,
+						thinkingSeed + index,
+						() => config,
+						() => renderEpoch,
+					);
 				}
 			}
 			this.contentContainer.children.unshift(
@@ -721,7 +774,7 @@ export default function (pi: ExtensionAPI) {
 				? Math.max(0, width - bubbleWidth + this.outputPad)
 				: this.outputPad;
 			const header = `${" ".repeat(headerIndent)}${headerContent}`;
-			const lines = [...messageDivider(width, presentation.dateLabel), header, ...bubbleLines];
+			const lines = [...messageDivider(width, presentation.dateLabel, config.dates.label), header, ...bubbleLines];
 			userRenderCache.set(this, { epoch: renderEpoch, width, lines });
 			return lines;
 		};
