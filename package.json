@@ -1,6 +1,6 @@
 {
   "name": "pi-chat-layout",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packageManager": "pnpm@11.8.0",
   "description": "Messenger-style conversation layout for the Pi coding agent TUI",
   "type": "module",

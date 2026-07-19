@@ -6,9 +6,13 @@
 
 A messenger-style conversation layout for the [Pi coding agent](https://github.com/earendil-works/pi). It adds actor headers, responsive metadata, turn grouping, date separators, and optional alternating alignment without imposing a model or terminal-font theme.
 
-| Light | Dark |
-|:---:|:---:|
-| ![Light terminal theme](docs/images/chat-layout-light.png) | ![Dark terminal theme](docs/images/chat-layout-dark.png) |
+### Light
+
+![Light terminal theme](docs/images/chat-layout-light.png)
+
+### Dark
+
+![Dark terminal theme](docs/images/chat-layout-dark.png)
 
 ## Install
 
@@ -29,7 +33,7 @@ Then create `~/.pi/agent/chat-layout.json`:
   "icons": {
     "user": "😎",
     "assistant": "",
-    "thinking": { "medium": "󱩒", "high": "󱩔" }
+    "thinking": { "medium": "\udb86\ude52", "high": "\udb86\ude54" }
   },
   "models": {
     "aliases": { "openai-codex/gpt-5.6-sol": "SOL" }
