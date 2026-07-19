@@ -137,8 +137,11 @@ describe.sequential("chat layout renderer", () => {
 			1,
 		).render(80).map(stripAnsi);
 
-		expect(userLines.find((line) => line.includes("ME Artem"))?.startsWith(" ")).toBe(true);
-		expect(assistantLines).toContainEqual(expect.stringContaining("AI Pi test-model  ×  high"));
+		const userHeader = userLines.find((line) => line.includes("ME Artem"));
+		const assistantHeader = assistantLines.find((line) => line.includes("AI Pi test-model"));
+		expect(userHeader?.indexOf("ME Artem")).toBeGreaterThan(1);
+		expect(assistantHeader?.indexOf("AI Pi test-model")).toBe(1);
+		expect(assistantHeader).toContain("AI Pi test-model  ·  high");
 		expect([...userLines, ...assistantLines].every((line) => visibleWidth(line) <= 80)).toBe(true);
 		await runtime.shutdown();
 	});
@@ -304,7 +307,7 @@ describe.sequential("chat layout renderer", () => {
 			"Thinking...",
 			1,
 		).render(80).map(stripAnsi);
-		expect(lines).toContainEqual(expect.stringContaining("🤖 Pi  ×"));
+		expect(lines).toContainEqual(expect.stringContaining("🤖 Pi  ·"));
 		expect(lines.join("\n")).not.toContain("test-model");
 		await runtime.shutdown();
 	});
@@ -351,14 +354,14 @@ describe.sequential("chat layout renderer", () => {
 		const update = { ...start, content: [{ type: "text" as const, text: "AB" }] };
 		await runtime.emit("message_update", { message: update });
 		component.updateContent(update);
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("×  󱩖 xhigh  ×");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("·  󱩖 xhigh  ·");
 		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("0↑ 0↓");
 		expect(component.render(80).map(stripAnsi).join("\n")).not.toContain("$0");
 
 		const final = { ...update };
 		await runtime.emit("message_end", { message: final });
 		component.updateContent(final);
-		expect(component.render(80).map(stripAnsi).join("\n")).toContain("×  󱩖 xhigh  ×");
+		expect(component.render(80).map(stripAnsi).join("\n")).toContain("·  󱩖 xhigh  ·");
 		await runtime.shutdown();
 	});
 
@@ -426,10 +429,11 @@ describe.sequential("chat layout renderer", () => {
 			.render(80).map(stripAnsi);
 		expect(primary.some((line) => line.includes("────"))).toBe(true);
 		expect(continuation.some((line) => line.includes("────"))).toBe(false);
-		expect(continuation.some((line) => line.includes("×"))).toBe(false);
-		const stepLine = continuation.find((line) => line.includes("step 2"));
-		expect(stepLine?.indexOf("step 2")).toBe(1);
-		expect(stepLine).toContain("step 2  ›");
+		expect(continuation.join("\n")).not.toContain("🤖 test-model");
+		const stepLine = continuation.find((line) => line.includes("02"));
+		expect(stepLine?.indexOf("02")).toBe(1);
+		expect(stepLine).toContain("02  ›");
+		expect(stepLine).not.toMatch(/[←→]/);
 		expect(continuation.join("\n")).toContain("$0");
 		expect(continuation.join("\n")).toContain("Done");
 		await runtime.shutdown();

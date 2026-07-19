@@ -348,12 +348,12 @@ function fitHeader(label: string, fields: HeaderField[], width: number, separato
 }
 
 function actorHeader(actor: string, fields: HeaderField[], width: number): string {
-	return fitHeader(bold(themed("accent", actor)), fields, width, themed("dim", "×"));
+	return fitHeader(bold(themed("accent", actor)), fields, width, themed("dim", "·"));
 }
 
 function stepHeader(step: number, fields: HeaderField[], width: number): string {
 	return fitHeader(
-		themed("dim", `step ${step}`),
+		themed("dim", step.toString().padStart(2, "0")),
 		fields.filter((field) => field.key !== "thinking"),
 		width,
 		themed("dim", "›"),

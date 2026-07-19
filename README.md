@@ -8,14 +8,14 @@ It makes long terminal sessions easier to scan with actor headers, responsive me
 
 ────────────────────────────────────────────────────────────
 
-                                      👤 You  ×  21:03:30
+                                      👤 You  ·  21:03:30
 
                                       Continue the refactor
 
 
 ────────────────────────────────────────────────────────────
 
- 🤖 gpt-5.6-sol  ×  high  ×  21:03:35  ×  4.0s  ×  1.2k↑ 340↓  ×  $0.0041
+ 🤖 gpt-5.6-sol  ·  high  ·  21:03:35  ·  4.0s  ·  1.2k↑ 340↓  ·  $0.0041
 
  Done. The tests pass.
 ```
@@ -93,7 +93,7 @@ Set `actors.user` to the user label. Assistant labels can either prefix or repla
 
 ### Header metadata
 
-`header.metadata` controls assistant metadata and its display order. Supported values are `thinking`, `time`, `duration`, `tokens`, and `cost`. Use an empty array to show only the actor label.
+`header.metadata` controls assistant metadata and its display order. Supported values are `thinking`, `time`, `duration`, `tokens`, and `cost`. Use an empty array to show only the actor label. Assistant identity and telemetry stay together on the left.
 
 On narrow terminals, low-priority fields are removed before the header is truncated. Cost and token counts disappear first; the completion time is retained longest.
 
@@ -140,7 +140,7 @@ Assistant headers can show:
 - input/output token counts;
 - reported request cost.
 
-Later assistant steps omit repeated dividers and actor labels, but keep a compact diagnostic line on the assistant side, such as `step 2 › 21:03:42 › 1.6s › 1.6k↑ 26↓ › $0.01`. While a step is running, its start time remains visible; duration, tokens, and cost appear when it completes. Historical sessions receive `VAULT LOG // <date>` separators when the calendar day changes.
+Later assistant steps omit repeated dividers and actor labels, but keep a compact left-aligned diagnostic line, such as `02 › 21:03:42 › 1.6s › 1.6k↑ 26↓ › $0.01`. While a step is running, its start time remains visible; duration, tokens, and cost appear when it completes. Historical sessions receive `VAULT LOG // <date>` separators when the calendar day changes.
 
 User headers show the message submission time. Historical metadata is reconstructed from Pi session entries and is not written back to the session or sent to the model.
 
